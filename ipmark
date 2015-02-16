@@ -5,6 +5,7 @@
 Cam/Operator interface for BBB/StepOneCNC
 Based on F-Engrave (with most of the UI redone to fit 7" touchscreen and run LinuxCNC from this program)
 Copyright (c) 2014 IPMINC.com, Dave Marquart
+gpl v2.0 or higher
 """
 
 from Tkinter import *
