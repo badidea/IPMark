@@ -1,0 +1,3959 @@
+#!/usr/bin/python
+#ipmark v0.6 test
+
+"""
+Cam/Operator interface for BBB/StepOneCNC
+Based on F-Engrave (with most of the UI redone to fit 7" touchscreen and run LinuxCNC from this program)
+Copyright (c) 2014 IPMINC.com, Dave Marquart
+"""
+
+from Tkinter import *
+from tkFileDialog import *
+import tkMessageBox
+from math import *
+import time
+import os, sys, threading
+import re
+import binascii
+import getopt
+from subprocess import Popen, PIPE
+import argparse
+import tkFont
+import linuxcnc
+
+
+c = linuxcnc.command()
+s = linuxcnc.stat()
+
+version   = '0.6'
+IN_AXIS   = "AXIS_PROGRESS_BAR" in os.environ
+
+Zero      = 0.0000001
+STOP_CALC = 0
+
+#Setting QUIET to True will stop almost all console messages
+QUIET = False
+
+################################################################################
+#             Function for outputting messages to different locations          #
+#            depending on what options are enabled                             #
+################################################################################
+def fmessage(text,newline=True):
+    global IN_AXIS, QUIET
+    if (not IN_AXIS and not QUIET):
+        if newline==True:
+            try:
+                sys.stdout.write(text)
+                sys.stdout.write("\n")
+            except:
+                pass
+        else:
+            try:
+                sys.stdout.write(text)
+            except:
+                pass
+            
+def message_box(title,message):
+        tkMessageBox.showinfo(title,message)
+        pass
+
+def message_ask_ok_cancel(title, mess):
+        result=tkMessageBox.askokcancel(title, mess)
+        return result
+
+################################################################################
+class Application(Frame):
+    def __init__(self, master):
+        Frame.__init__(self, master)
+        self.w = 800
+        self.h = 600
+        frame = Frame(master, width=self.w, height=self.h)
+        self.master = master
+        self.x = -1
+        self.y = -1
+        default_font = tkFont.nametofont("TkDefaultFont")
+        default_font.configure(size=16)
+        text_font = tkFont.nametofont("TkTextFont")
+        text_font.configure(size=16)
+        fixed_font = tkFont.nametofont("TkFixedFont")
+        fixed_font.configure(size=16)
+        self.createWidgets()
+        
+
+    def createWidgets(self):
+        self.initComplete = 0
+        self.master.bind("<Configure>", self.Master_Configure)
+        self.master.bind('<Enter>', self.bindConfigure)
+        self.master.bind('<Escape>', self.KEY_ESC)
+        self.master.bind('<F1>', self.KEY_F1)
+        self.master.bind('<F2>', self.KEY_F2)
+        self.master.bind('<F3>', self.KEY_F3)
+        self.master.bind('<F4>', self.KEY_F4)
+
+        
+        self.show_axis  = BooleanVar()        
+        self.show_box   = BooleanVar()
+        self.show_thick = BooleanVar()
+        self.flip       = BooleanVar()
+        self.mirror     = BooleanVar()
+        self.outer      = BooleanVar()
+        self.upper      = BooleanVar()
+        self.serialn    = BooleanVar()
+        self.fontdex    = BooleanVar()
+        self.v_flop     = BooleanVar()
+        self.v_pplot    = BooleanVar()
+        self.arc_fit    = BooleanVar()
+        self.jog_rate   = BooleanVar()
+
+        self.YSCALE     = StringVar()
+        self.XSCALE     = StringVar()
+        self.LSPACE     = StringVar()
+        self.CSPACE     = StringVar()
+        self.WSPACE     = StringVar()
+        self.TANGLE     = StringVar()
+        self.TRADIUS    = StringVar()
+        self.DRATE      = StringVar()
+        self.SERNUM     = StringVar()
+        self.STHICK     = StringVar()
+        self.origin     = StringVar()
+        self.justify    = StringVar()
+        self.units      = StringVar()
+
+        self.xorigin    = StringVar()
+        self.yorigin    = StringVar()
+        self.segarc     = StringVar()
+        self.accuracy   = StringVar()
+
+       
+        self.funits     = StringVar()
+        self.FEED       = StringVar()
+        self.fontfile   = StringVar()
+        self.H_CALC     = StringVar()
+        self.plotbox    = StringVar()
+        self.boxgap     = StringVar()
+        self.fontdir    = StringVar()
+        self.cut_type   = StringVar()
+        self.input_type = StringVar()
+        
+        self.gpre        = StringVar()
+        self.gpost       = StringVar()
+        
+        self.maxcut             = StringVar()
+        self.current_input_file = StringVar()
+         
+        ###########################################################################
+        #                         INITILIZE VARIABLES                             #
+        #    if you want to change a default setting this is the place to do it   #
+        ###########################################################################
+        self.show_axis.set(1)
+        self.show_box.set(1)
+        self.show_thick.set(1)
+        self.flip.set(0)
+        self.mirror.set(0)
+        self.outer.set(1)
+        self.upper.set(1)
+        self.serialn.set(0)
+        self.fontdex.set(0)
+        
+        self.v_flop.set(0)
+        self.v_pplot.set(1)
+        self.arc_fit.set(1)
+        self.jog_rate.set(0)
+        self.YSCALE.set(".125")
+        self.XSCALE.set("100")
+        self.LSPACE.set("1.1")
+        self.CSPACE.set("40")
+        self.WSPACE.set("100")
+        self.TANGLE.set("0.0")
+        self.TRADIUS.set("0.0")
+        self.DRATE.set("20")       
+        self.STHICK.set("0.01")
+        self.origin.set("Top-Center")      # Options are "Default",
+                                        #             "Top-Left", "Top-Center", "Top-Right",
+                                        #             "Mid-Left", "Mid-Center", "Mid-Right",
+                                        #             "Bot-Left", "Bot-Center", "Bot-Right" 
+                                            
+        self.justify.set("Center")        # Options are "Left", "Right", "Center"
+        self.units.set("in")            # Options are "in" and "mm"
+        self.FEED.set("6")
+        self.fontfile.set("normal.cxf")
+        self.H_CALC.set("max_use")
+        self.plotbox.set("no_box")
+        self.boxgap.set("0.25")
+        self.fontdir.set("/home/machinekit/fonts")
+        self.cut_type.set("engrave")    # Options are "engrave" and "v-carve"
+        self.input_type.set("text")     # Options are "text" and "image" 
+
+        self.xorigin.set("0.0")
+        self.yorigin.set("0.0")
+        self.segarc.set("10.0")
+        self.accuracy.set("0.001")
+
+        self.SERNUM.set("1")
+
+        self.segID   = []
+        self.gcode   = []
+        self.svgcode = []
+        self.coords  = []
+        
+        self.font    = {}
+        self.RADIUS_PLOT = 0
+        self.MAXX    = 0
+        self.MINX    = 0
+        self.MAXY    = 0
+        self.MINY    = 0
+        self.Xzero = float(0.0)
+        self.Yzero = float(0.0)
+        self.default_text = "IPM-Mark"
+        self.NC_FILE     = ("/home/machinekit/gcode/")
+        self.PROG_FILE     = ("/home/machinekit/gcode/program.ipm")
+        self.FONTS_DIR     = ("/home/machinekit/")
+        self.current_input_file.set(" ")
+        
+        self.pscale = 0
+        # PAN and ZOOM STUFF
+        self.panx = 0
+        self.panx = 0
+        self.lastx = 0
+        self.lasty = 0
+        
+        # Derived variables
+
+           
+        if self.units.get() == 'in':
+            self.funits.set('in/min')
+        else:
+            self.units.set('mm')
+            self.funits.set('mm/min')
+            
+        ##########################################################################
+        #                         G-Code Default Preamble                        #
+        ##########################################################################
+        ##########################################################################
+        self.gpre.set("G17 G90 G20 G54")
+
+        ##########################################################################
+        #                        G-Code Default Postamble                        #
+        ##########################################################################                                                  
+        ##########################################################################
+        self.gpost.set("M2")
+        
+        ##########################################################################
+        ###                     END INITILIZING VARIABLES                      ###
+        ##########################################################################
+
+        
+        ##########################################################################
+
+        # make a Status Bar
+        self.statusMessage = StringVar()
+        self.statusMessage.set("")
+        self.statusbar = Label(self.master, textvariable=self.statusMessage, \
+                                   bd=1, relief=SUNKEN , height=1)
+        self.statusbar.pack(anchor=SW, fill=X, side=BOTTOM)
+        self.statusMessage.set("Welcome to IPM-Mark")
+
+        # Canvas
+        lbframe = Frame( self.master )
+        self.PreviewCanvas_frame = lbframe
+        self.PreviewCanvas = Canvas(lbframe, width=self.w-475, \
+                                        height=self.h-200, background="grey")
+        self.PreviewCanvas.pack(side=LEFT, fill=BOTH, expand=1)
+        self.PreviewCanvas_frame.place(x=230, y=30)
+        # Left Column #
+        
+        self.OpenFile = Button(self.master,text="Open File")
+        self.OpenFile.bind("<ButtonRelease-1>", self.Open_File_Click)
+
+        self.SaveFile = Button(self.master,text="Save File")
+        self.SaveFile.bind("<ButtonRelease-1>", self.Save_File_Click)
+
+        self.TxtSettings = Button(self.master,text="Text Settings")
+        self.TxtSettings.bind("<ButtonRelease-1>", self.Txt_Set_Click)
+
+        self.GenSettings = Button(self.master,text="Settings")
+        self.GenSettings.bind("<ButtonRelease-1>", self.Gen_Set_Click)
+
+        self.ExitProg = Button(self.master,text="Exit")
+        self.ExitProg.bind("<ButtonRelease-1>", self.menu_File_Quit)
+
+        self.Recalculate = Button(self.master,text="Recalculate")
+        self.Recalculate.bind("<ButtonRelease-1>", self.Recalculate_Click)
+        
+        # End Left Column #
+
+        # Right Column #
+
+        self.Label_Xoffset = Label(self.master,text="X Offset")
+        self.Label_Xoffset_u = Label(self.master,textvariable=self.units, anchor=W)
+        self.Entry_Xoffset = Entry(self.master,width="5",justify="center")
+        self.Entry_Xoffset.configure(textvariable=self.xorigin)
+        self.Entry_Xoffset.bind('<Return>', self.Recalculate_Click)
+        self.xorigin.trace_variable("w", self.Entry_Xoffset_Callback)
+
+        self.Label_Yoffset = Label(self.master,text="Y Offset")
+        self.Label_Yoffset_u = Label(self.master,textvariable=self.units, anchor=W)
+        self.Entry_Yoffset = Entry(self.master,width="5",justify="center")
+        self.Entry_Yoffset.configure(textvariable=self.yorigin)
+        self.Entry_Yoffset.bind('<Return>', self.Recalculate_Click)
+        self.yorigin.trace_variable("w", self.Entry_Yoffset_Callback)
+        
+        self.Label_sernum = Label(self.master,text="Serial #")
+        self.Entry_sernum = Entry(self.master,width="10",justify="center")
+        self.Entry_sernum.configure(textvariable=self.SERNUM)
+        self.Entry_sernum.bind('<Return>', self.Recalculate_Click)
+
+        self.Manual = Button(self.master,text="Manual")
+        self.Manual.bind("<ButtonRelease-1>", self.Manual_Click)
+        
+        self.separator4 = Frame(height=2, bd=1, relief=SUNKEN)
+
+        self.Start = Button(self.master,text="Start (F4)")
+        self.Start.bind("<ButtonRelease-1>", self.Start_Click)
+
+        self.Home = Button(self.master,text="Home (F3)")
+        self.Home.bind("<ButtonRelease-1>", self.Home_Click)
+
+
+        # End Right Column #
+
+        # Text Box
+        self.Input_Label = Label(self.master,text="Input Text:",anchor=W)
+
+        lbframe = Frame( self.master)
+        self.Input_frame = lbframe
+        scrollbar = Scrollbar(lbframe, orient=VERTICAL)
+        self.Input = Text(lbframe, width="40", height="12", yscrollcommand=scrollbar.set,\
+                              bg='white')
+        self.Input.insert(END, self.default_text)
+        scrollbar.config(command=self.Input.yview)
+        scrollbar.pack(side=RIGHT, fill=Y)
+        self.Input.pack(side=LEFT, fill=BOTH, expand=1)
+        self.Input.bind("<Key>", self.Recalculate_RQD_Nocalc)
+
+        #GEN Setting Window Entry initialization
+        self.Entry_BoxGap = Entry()
+        self.Entry_ArcAngle = Entry()
+        self.Entry_Accuracy = Entry()
+
+        #Text Setting Window Entry initialization
+        self.Entry_Yscale = Entry()
+        self.Entry_Xscale = Entry()
+        self.Entry_Lspace = Entry()
+        self.Entry_Cspace = Entry()
+        self.Entry_Wspace = Entry()
+        self.Entry_Tangle = Entry()
+        self.Entry_Tradius = Entry()
+        self.Entry_Feed = Entry()
+        self.Entry_Drate = Entry()
+
+        self._start()
+
+
+    def _start(self):
+        self._alive = True
+        self._reciever_thread = threading.Thread(target=self._reader)
+        self._reciever_thread.setDaemon(1)
+        self._reciever_thread.start()
+        print "GPIO Running"
+        
+    def _reader(self):
+        try:
+            while self._alive:
+                inPin = open("/sys/class/gpio/gpio69/value", 'r')
+                for line in inPin:
+                    if "0" in line:
+                        self.CycleStart()
+                inPin.close()
+                s.poll()
+                if s.task_state == linuxcnc.STATE_ESTOP:
+                    self.statusMessage.set("E-STOP Condition!")
+        except Exception:
+            pass
+
+        
+################################################################################
+    def entry_set(self, val2, calc_flag=0, new=0):
+        if calc_flag == 0 and new == 0:
+            try:
+                self.statusbar.configure( bg = 'yellow' )
+                val2.configure( bg = 'yellow' )
+                self.statusMessage.set(" Recalculation required.")
+            except:
+                pass
+        elif calc_flag == 3:
+            try:
+                val2.configure( bg = 'red' )
+                self.statusbar.configure( bg = 'red' )
+                self.statusMessage.set(" Value should be a number. ")
+            except:
+                pass
+        elif calc_flag == 2:
+            try:
+                self.statusbar.configure( bg = 'red' )
+                val2.configure( bg = 'red' )
+                #self.statusMessage.set(message)
+            except:
+                pass
+        elif (calc_flag == 0 or calc_flag == 1) and new==1 :
+            try:
+                self.statusbar.configure( bg = 'white' )
+                self.statusMessage.set(" ")
+                val2.configure( bg = 'white' )
+            except:
+                pass
+        elif (calc_flag == 1) and new==0 :
+            try:
+                self.statusbar.configure( bg = 'white' )
+                self.statusMessage.set(" ")
+                val2.configure( bg = 'white' )
+            except:
+                pass
+
+            
+        elif (calc_flag == 0 or calc_flag == 1) and new==2:
+            return 0
+        return 1
+
+################################################################################
+    def Sort_Paths(self,ecoords,i_loop=2):
+        ##########################
+        ###   find loop ends   ###
+        ##########################
+        Lbeg=[]
+        Lend=[]
+        if len(ecoords)>0:
+            Lbeg.append(0)
+            loop_old=ecoords[0][i_loop]
+            for i in range(1,len(ecoords)):
+                loop = ecoords[i][i_loop]
+                if loop != loop_old:
+                    Lbeg.append(i)
+                    Lend.append(i-1)
+                loop_old=loop
+            Lend.append(i)
+
+        #######################################################
+        # Find new order based on distance to next beg or end #
+        #######################################################
+        order_out = []
+        use_beg=0
+        if len(ecoords)>0:
+            order_out.append([Lbeg[0],Lend[0]])
+        inext = 0
+        total=len(Lbeg)
+        for i in range(total-1):
+            if use_beg==1:
+                ii=Lbeg.pop(inext)
+                Lend.pop(inext)
+            else:
+                ii=Lend.pop(inext)
+                Lbeg.pop(inext)
+
+            Xcur = ecoords[ii][0]
+            Ycur = ecoords[ii][1]
+
+            dx = Xcur - ecoords[ Lbeg[0] ][0]
+            dy = Ycur - ecoords[ Lbeg[0] ][1]
+            min_dist = dx*dx + dy*dy
+
+            dxe = Xcur - ecoords[ Lend[0] ][0]
+            dye = Ycur - ecoords[ Lend[0] ][1]
+            min_diste = dxe*dxe + dye*dye
+
+            inext=0
+            inexte=0
+            for j in range(1,len(Lbeg)):
+                dx = Xcur - ecoords[ Lbeg[j] ][0]
+                dy = Ycur - ecoords[ Lbeg[j] ][1]
+                dist = dx*dx + dy*dy
+                if dist < min_dist:
+                    min_dist=dist
+                    inext=j
+                ###
+                dxe = Xcur - ecoords[ Lend[j] ][0]
+                dye = Ycur - ecoords[ Lend[j] ][1]
+                diste = dxe*dxe + dye*dye
+                if diste < min_diste:
+                    min_diste=diste
+                    inexte=j
+                ###
+            if min_diste < min_dist:
+                inext=inexte
+                order_out.append([Lend[inexte],Lbeg[inexte]])
+                use_beg=1
+            else:
+                order_out.append([Lbeg[inext],Lend[inext]])
+                use_beg=0
+        ###########################################################
+        return order_out
+
+    def Line_Arc_Fit(self,lastx,lasty,lastz,x1,y1,z1,nextx,nexty,nextz,FLAG_arc,code,R_last,x_center_last,y_center_last,FLAG_line):
+        global Zero
+        Acc    =   float(self.accuracy.get())
+        ########################################
+        ### Line fit and arc fit (curve fit) ###
+        ########################################
+        dx_a = x1-lastx
+        dy_a = y1-lasty
+        dz_a = z1-lastz
+
+        dx_c = nextx-lastx
+        dy_c = nexty-lasty
+        dz_c = nextz-lastz
+
+        if   (abs(dx_a) > Zero):
+            line_t = dx_c / dx_a
+        elif (abs(dy_a) > Zero):
+            line_t = dy_c / dy_a
+        elif (abs(dz_a) > Zero):
+            line_t = dz_c / dz_a
+        else:
+            line_t = 0
+            
+        ex = dx_c - dx_a * line_t
+        ey = dy_c - dy_a * line_t
+        ez = dz_c - dz_a * line_t
+        et = sqrt(ex*ex + ey*ey + ez*ez)
+
+        L_a = dx_a*dx_a + dy_a*dy_a + dz_a*dz_a
+        L_c = dx_c*dx_c + dy_c*dy_c + dz_c*dz_c
+
+        FLAG_arc_last  = FLAG_arc
+        FLAG_arc = 0
+        
+        FLAG_line_last = FLAG_line
+        if  et > Acc or (L_a >= L_c) or FLAG_arc_last == 1:
+            FLAG_line = 0
+        else:
+            FLAG_line = 1
+            code="G1"
+            
+        ###############
+        # Arc Fitting #
+        ###############
+
+        
+        if (FLAG_line != 1 and FLAG_line_last !=1 and line_t != 0 and bool(self.arc_fit.get())==1 ):
+            dx_b = nextx-x1
+            dy_b = nexty-y1
+            dz_b = nextz-z1
+            L_b  = dx_b*dx_b + dy_b*dy_b + dz_b*dz_b
+            
+            if abs(dx_a) > Zero and abs(dx_b) > Zero:
+                ma = dy_a/dx_a
+                mb = dy_b/dx_b
+
+                if abs(mb-ma) > Zero and  (abs(ma) > Zero or abs(mb) > Zero) :
+                    x_center = (ma*mb*(lasty-nexty)+mb*(lastx+x1)-ma*(x1+nextx))/(2*(mb-ma))
+                    if abs(ma) > Zero:
+                        y_center = -1/ma*(x_center-(lastx+x1)/2) + (lasty+y1)/2
+                    elif abs(mb) > Zero:
+                        y_center= -1/mb*(x_center-(x1+nextx)/2) + (y1+nexty)/2
+                    
+                    R_arc = sqrt((x1-x_center)**2 + (y1-y_center)**2)
+                    cord_a = sqrt(dx_a**2 + dy_a**2)
+                    cord_b = sqrt(dx_b**2 + dy_b**2)
+                    cord_limit = 2*R_arc*sin(radians(float(self.segarc.get())))
+
+                    try:
+                        sagitta_a = R_arc - sqrt(R_arc**2 - cord_a**2)
+                        sagitta_b = R_arc - sqrt(R_arc**2 - cord_b**2)
+                        sagitta_min = min(sagitta_a , sagitta_b)
+                    except:
+                        sagitta_min = 0.0
+
+                    SKIP=0
+                    if FLAG_arc_last == 1:
+                        if abs(R_last-R_arc)   > Zero or \
+                           abs(x_center_last-x_center) > Zero or \
+                           abs(y_center_last-y_center) > Zero:
+                            SKIP=1
+                            
+                    if max(cord_a,cord_b) <= cord_limit and \
+                                       abs(ez) <= Zero and \
+                                       L_a**2 + L_b**2 < L_c**2 and \
+                                       cord_a/cord_b >= 1.0/1.5 and \
+                                       cord_a/cord_b <= 1.5 and \
+                                       sagitta_min > Zero and \
+                                       SKIP == 0:
+                        
+                        seg_sin_test  =   (y1 - lasty)/ cord_a
+                        seg_cos_test  =  -(x1 - lastx)/ cord_a
+                        phi_test      = Get_Angle(seg_sin_test,seg_cos_test)
+                        X_test,Y_test = Transform(x_center-lastx,y_center-lasty,radians(phi_test))
+                        if Y_test > 0.0:
+                            code="G2"
+                        else:
+                            code="G3"
+                        x_center_last = x_center 
+                        y_center_last = y_center
+                        R_last = R_arc
+                        FLAG_arc = 1
+        WRITE=0
+
+        if FLAG_line == 0 and FLAG_arc == 0:
+            WRITE=1
+            
+        return code,FLAG_arc,R_last,x_center_last,y_center_last,WRITE,FLAG_line
+        #####################
+        # End Arc Fitting   #
+        #####################
+
+    ################################################################################
+    def home(self):
+    #home all axes
+        s.poll()
+        c.state(linuxcnc.STATE_ON)
+        c.wait_complete()            
+        time.sleep(.5)
+        s.poll()
+        if not s.estop and s.enabled and (s.interp_state == linuxcnc.INTERP_IDLE):
+            c.mode(linuxcnc.MODE_MANUAL)
+            c.wait_complete()
+            c.home(2)
+            c.wait_complete()
+            c.home(0)
+            c.home(1)
+            c.wait_complete()
+            self.Home.configure( bg = 'green' )
+        
+        
+
+    ################################################################################
+    def start(self):                                            
+        if s.homed:
+            SerNum = int(self.SERNUM.get())
+            RunSerial = bool(self.serialn.get())
+            program_start_line = 0
+
+            prog_file = self.PROG_FILE
+
+            #Copy Gcode
+            if (self.Check_All_Variables() > 0):
+                return
+
+            self.WriteGCodeR()
+            fout = open(prog_file,'w')
+
+            for line in self.gcode:
+                fout.write(line+'\n');
+
+            fout.close()
+
+            # Open File to run
+            if not s.estop and s.enabled and (s.interp_state == linuxcnc.INTERP_IDLE):
+                c.mode(linuxcnc.MODE_AUTO)
+                c.wait_complete()
+                c.program_open(prog_file)
+                c.auto(linuxcnc.AUTO_RUN, program_start_line)
+                program_start_line = 0
+                c.wait_complete()
+                
+            if RunSerial:
+                SerNum = SerNum+1
+                self.SERNUM.set(SerNum)
+                self.DoIt()
+        else :
+            self.Home.configure( bg = 'red' )
+            self.menu_Home_Machine()
+ 
+
+    ################################################################################
+    def cap_off(self):
+        s.poll()
+        x_origin = ('%.3f' % (s.actual_position[0]))
+        self.xorigin.set(x_origin)
+        y_origin = ('%.3f' % (s.actual_position[1]))
+        self.yorigin.set(y_origin)
+        self.DoIt()
+        
+        
+    ################################################################################
+
+    def WriteGCode(self):
+        global Zero
+        self.gcode = []
+        String =   self.Input.get(1.0,END)
+        
+        str_data=''
+        cnt = 0
+        for char in String:
+           if cnt > 10:
+               str_data = str_data + ')'
+               self.gcode.append('(ipmark_set TCODE   %s' %(str_data))
+               str_data=''
+               cnt=0
+           str_data = str_data + ' %03d ' %( ord(char) )
+           cnt = cnt + 1
+        str_data = str_data + ')'
+        self.gcode.append('(ipmark_set TCODE   %s' %(str_data))
+        
+           # BOOL
+        self.gcode.append('(ipmark_set show_axis  %s )' %( int(self.show_axis.get())     ))
+        self.gcode.append('(ipmark_set show_box   %s )' %( int(self.show_box.get())      ))
+        self.gcode.append('(ipmark_set show_thick %s )' %( int(self.show_thick.get())    ))
+        self.gcode.append('(ipmark_set flip       %s )' %( int(self.flip.get())          ))
+        self.gcode.append('(ipmark_set mirror     %s )' %( int(self.mirror.get())        ))
+        self.gcode.append('(ipmark_set outer      %s )' %( int(self.outer.get())         ))
+        self.gcode.append('(ipmark_set upper      %s )' %( int(self.upper.get())         ))
+        self.gcode.append('(ipmark_set serialn    %s )' %( int(self.serialn.get())         ))       
+ 
+        # STRING.get()
+        self.gcode.append('(ipmark_set YSCALE     %s )' %( self.YSCALE.get()     ))
+        self.gcode.append('(ipmark_set XSCALE     %s )' %( self.XSCALE.get()     ))
+        self.gcode.append('(ipmark_set LSPACE     %s )' %( self.LSPACE.get()     ))
+        self.gcode.append('(ipmark_set CSPACE     %s )' %( self.CSPACE.get()     ))
+        self.gcode.append('(ipmark_set WSPACE     %s )' %( self.WSPACE.get()     ))
+        self.gcode.append('(ipmark_set TANGLE     %s )' %( self.TANGLE.get()     ))
+        self.gcode.append('(ipmark_set TRADIUS    %s )' %( self.TRADIUS.get()    ))
+        self.gcode.append('(ipmark_set DRATE      %s )' %( self.DRATE.get()      ))
+        self.gcode.append('(ipmark_set SERNUM     %s )' %( self.SERNUM.get()     ))
+        self.gcode.append('(ipmark_set origin     %s )' %( self.origin.get()     ))
+        self.gcode.append('(ipmark_set justify    %s )' %( self.justify.get()    ))
+        self.gcode.append('(ipmark_set units      %s )' %( self.units.get()      ))
+
+        self.gcode.append('(ipmark_set xorig    %s )' %( self.xorigin.get()    ))
+        self.gcode.append('(ipmark_set yorig    %s )' %( self.yorigin.get()    ))
+        self.gcode.append('(ipmark_set segarc     %s )' %( self.segarc.get()     ))
+        self.gcode.append('(ipmark_set accuracy   %s )' %( self.accuracy.get()   ))
+        
+        self.gcode.append('(ipmark_set FEED       %s )' %( self.FEED.get()       ))
+        self.gcode.append('(ipmark_set fontfile   \042%s\042 )' %( self.fontfile.get() ))
+        self.gcode.append('(ipmark_set H_CALC     %s )' %( self.H_CALC.get()     ))
+        self.gcode.append('(ipmark_set plotbox    %s )' %( self.plotbox.get()    ))
+        self.gcode.append('(ipmark_set boxgap     %s )' %( self.boxgap.get()    ))
+               
+        self.gcode.append('(ipmark_set fontdir    \042%s\042 )' %( self.fontdir.get()  ))
+
+        self.gcode.append('(ipmark_set input_type  %s )' %( self.input_type.get() ))        
+
+        self.gcode.append('( Fontfile: %s )' %(self.fontfile.get()))
+        self.gcode.append("(#########################################################)")
+
+        
+    ################################################################################
+
+    def WriteGCodeR(self):
+        global Zero
+        self.gcode = []
+        DotRate  =   float(self.DRATE.get())
+        FeedRate  =   float(self.FEED.get())
+        String =   self.Input.get(1.0,END)
+        Acc    =   float(self.accuracy.get())
+
+
+   
+        self.gcode.append(self.gpre.get())  # inital code
+        self.gcode.append('F%.0f' %(FeedRate))
+       
+        oldx = oldy = -99990.0
+        first_stroke = True
+
+        if self.cut_type.get() == "engrave":
+            ##########################
+            ###   Create ECOORDS   ###
+            ##########################
+            loop=0
+            ecoords = []
+            for line in self.coords:
+                XY = line
+                x1 = XY[0]
+                y1 = XY[1]
+                x2 = XY[2]
+                y2 = XY[3]
+                dx = oldx - x1
+                dy = oldy - y1
+                dist = sqrt(dx*dx + dy*dy)
+                # check and see if we need to move to a new discontinuous start point
+                if (dist > Acc) or first_stroke:
+                    loop = loop+1
+                    first_stroke = False
+                    ecoords.append([x1,y1,loop])
+                ecoords.append([x2,y2,loop])
+                oldx, oldy = x2, y2
+
+            order_out=self.Sort_Paths(ecoords)
+            
+            ###########################
+            dist = 999
+            lastx=-999
+            lasty=-999
+            lastz= 0
+            z1   = 0
+            nextz= 0
+            
+            for line in order_out:
+                temp=line
+                if temp[0] > temp[1]:
+                    step = -1
+                else:
+                    step = 1
+
+                R_last         = 999
+                x_center_last  = 999
+                y_center_last  = 999
+                FLAG_arc = 0
+                FLAG_line = 0
+                code=" "
+                
+                loop_old = -1
+                for i in range(temp[0],temp[1]+step,step):
+                    x1   = ecoords[i][0]
+                    y1   = ecoords[i][1]
+                    loop = ecoords[i][2]
+
+                    if ( i+1 < temp[1]+step ):
+                        nextx    = ecoords[i+1][0]
+                        nexty    = ecoords[i+1][1]
+                        nextloop = ecoords[i+1][2]                   
+                    else:
+                        nextx    =  0
+                        nexty    =  0
+                        nextloop =  -99 #don't change this dummy number it is used below
+                        
+                    # check and see if we need to move to a new discontinuous start point
+                    if (loop != loop_old):
+                        dx = x1-lastx
+                        dy = y1-lasty
+                        dist = sqrt(dx*dx + dy*dy)
+                        if dist > Acc:
+                            # lift engraver
+                            self.gcode.append("M5")
+                            # rapid to current position
+                            self.gcode.append('G0 X%.4f Y%.4f' %(x1,y1))
+                            # drop cutter
+                            self.gcode.append('M3' + " " + 'S%.0f' %(DotRate))
+
+                            x_center_last = 0 
+                            y_center_last = 0
+                            R_last = 0
+                            FLAG_arc = 0
+                            FLAG_line = 0
+                            code=" "
+                            lastx = x1
+                            lasty = y1
+                    else:
+                        ########################################
+                        ### Line fit and arc fit (curve fit) ###
+                        ########################################
+                        [code,FLAG_arc,R_last,x_center_last,y_center_last,WRITE,FLAG_line] = \
+                            self.Line_Arc_Fit(lastx,lasty,lastz,x1,y1,z1,\
+                                              nextx,nexty,nextz,\
+                                              FLAG_arc,code,\
+                                              R_last,x_center_last,y_center_last,FLAG_line)
+                        
+                        if ( WRITE == 1 or nextloop == -99):
+                            if (code == "G2" or code == "G3"):
+                                R_check_1 = abs((x1-x_center_last   )**2+(y1-y_center_last   )**2 - R_last**2)
+                                R_check_2 = abs((lastx-x_center_last)**2+(lasty-y_center_last)**2 - R_last**2)
+                                if  R_check_1 > Zero or  R_check_2 > Zero:
+                                    fmessage("-- G-Code Curve Fitting Anomaly - Check Output --")
+                                    self.gcode.append('(---Curve Fitting Anomaly - Check Output. Error = %.6f ---)' %(max(R_check_1,R_check_2)))
+                                    self.gcode.append('G1 X%.4f Y%.4f' %(lastx,lasty))
+                                    self.gcode.append('G1 X%.4f Y%.4f' %(x1,y1))
+                                    self.gcode.append('(------------------ End Anomoly Resolution -------------------)')
+                                else:
+                                    Ival = x_center_last - lastx 
+                                    Jval = y_center_last - lasty
+                                    ######################################################################
+                                    # I would have used the following g-code (better error checking):
+                                    #self.gcode.append('%s X%.4f Y%.4f I%.4f J%.4f Z%.4f (R=%.4f)' \
+                                    #                  %(code,x1,y1, Ival,Jval ,z1, R_last))
+                                    # However, when I tested it with MACH 3 the arcs all were offset
+                                    # from 0,0 not the start of the arc.  I didn't want to figure out why
+                                    # so I switched to the next line that is not commented out.
+                                    ######################################################################
+                                    self.gcode.append('%s X%.4f Y%.4f R%.4f'%(code,x1,y1,R_last))
+                            else:
+                                self.gcode.append('G1 X%.4f Y%.4f' %(x1,y1))
+                            x_center_last = 0 
+                            y_center_last = 0
+                            R_last = 0
+                            FLAG_arc = 0
+                            FLAG_line = 0
+                            code=" "
+                            lastx=x1
+                            lasty=y1
+                        ##############################
+                        # End Line and Arc Fitting   #
+                        ##############################
+                    loop_old = loop
+
+            
+        # Make Circle
+        XOrigin    =  float(self.xorigin.get())
+        YOrigin    =  float(self.yorigin.get()) 
+        Radius_plot=  float(self.RADIUS_PLOT)
+        if Radius_plot != 0 and self.cut_type.get() == "engrave":
+            self.gcode.append( 'M5')
+            self.gcode.append('G0 X%.4f Y%.4f'  %(-Radius_plot - self.Xzero + XOrigin, YOrigin - self.Yzero))
+            self.gcode.append('S%.0f' %(DotRate))
+            self.gcode.append('M3')
+            self.gcode.append('G2 I%.4f J%.4f ' %( Radius_plot, 0.0))
+        # End Circle
+        self.gcode.append('M5')
+        self.gcode.append('G90 G0 X0 Y0')
+        self.gcode.append(self.gpost.get())  # final engraver up
+        
+        
+        
+    ################################################################################
+
+
+    def Quit_Click(self, event):
+        self.statusMessage.set("Exiting!")
+        self.quit()
+
+    def Shutdown_Click(self, event):
+        self.statusMessage.set("Shutting Down")
+        os.system('sudo shutdown -h now')
+        os.system('init 0')
+
+    def Recalculate_Click(self, event):
+        self.DoIt()
+
+    def Calibrate_Click(self, event):
+        os.system('sudo xinput_calibrator')
+
+    def Manual_Click(self, event):
+        if not s.estop and s.enabled and (s.interp_state == linuxcnc.INTERP_IDLE) and s.homed:
+            self.Manual_Window()
+
+    def Home_Click(self, event):
+        self.home()
+
+    def Start_Click(self, event):
+        self.start()
+
+    def X_plus(self, event):
+        if self.jog_rate.get() == 0:
+            c.jog(linuxcnc.JOG_CONTINUOUS,0,0.5)
+        else:
+            c.jog(linuxcnc.JOG_CONTINUOUS,0,0.25)
+        
+    def X_minus(self, event):
+        if self.jog_rate.get() == 0:
+            c.jog(linuxcnc.JOG_CONTINUOUS,0,-0.5)
+        else:
+            c.jog(linuxcnc.JOG_CONTINUOUS,0,-0.25)
+
+    def Y_plus(self, event):
+        if self.jog_rate.get() == 0:
+            c.jog(linuxcnc.JOG_CONTINUOUS,1,0.5)
+        else:
+            c.jog(linuxcnc.JOG_CONTINUOUS,1,0.25)
+        
+    def Y_minus(self, event):
+        if self.jog_rate.get() == 0:
+            c.jog(linuxcnc.JOG_CONTINUOUS,1,-0.5)
+        else:
+            c.jog(linuxcnc.JOG_CONTINUOUS,1,-0.25)
+
+    def JogRate(self, event):
+        if self.jog_rate.get() == 0:
+            self.jog_rate.set(1)
+        else:
+            self.jog_rate.set(0)
+
+    def Ding_Pin(self, event):
+        c.spindle(-1)
+
+    def Stop_Ding(self, event):
+        c.spindle(0)
+
+    def Axis_Stop(self, event):
+        c.jog(linuxcnc.JOG_STOP,0)
+        c.jog(linuxcnc.JOG_STOP,1)
+        
+    def Open_File_Click(self, event):
+        self.menu_File_Open_G_Code_File()
+        
+    def Save_File_Click(self, event):
+        self.menu_File_Save_G_Code_File()
+        
+    def Txt_Set_Click(self, event):
+        self.TEXT_Settings_Window()
+
+    def Gen_Set_Click(self, event):
+        self.GEN_Settings_Window()
+
+    def Settings_ReLoad_Click(self, event):
+        win_id=self.grab_current()
+        if self.input_type.get() == "text":
+            self.Read_font_file()
+        else:
+            self.Read_image_file()
+        self.DoIt()
+        try:
+            win_id.withdraw()
+            win_id.deiconify()
+        except:
+            pass
+
+        
+    ######################
+
+    def Close_Current_Window_Click(self):
+        win_id=self.grab_current()
+        win_id.destroy()
+
+    def Home_Close_Current_Window_Click(self):
+        self.home()
+        win_id=self.grab_current()
+        win_id.destroy()
+
+    def Stop_Click(self, event):
+        global STOP_CALC
+        STOP_CALC=1
+
+    # Left Column #
+    #############################
+    def Entry_Yscale_Check(self):
+        try:
+            value = float(self.YSCALE.get())
+            if  value <= 0.0:
+                self.statusMessage.set(" Height should be greater than 0 ")
+                return 2 # Value is invalid number
+        except:
+            return 3     # Value not a number
+        return 0         # Value is a valid number
+    def Entry_Yscale_Callback(self, varName, index, mode):
+        self.entry_set(self.Entry_Yscale, self.Entry_Yscale_Check() )
+    #############################        
+    def Entry_Xscale_Check(self):
+        try:
+            value = float(self.XSCALE.get())
+            if  value <= 0.0:
+                self.statusMessage.set(" Width should be greater than 0 ")
+                return 2 # Value is invalid number
+        except:
+            return 3     # Value not a number
+        return 0         # Value is a valid number
+    def Entry_Xscale_Callback(self, varName, index, mode):
+        self.entry_set(self.Entry_Xscale, self.Entry_Xscale_Check() )        
+    #############################
+    def Entry_Lspace_Check(self):
+        try:
+            value = float(self.LSPACE.get())
+            if  value < 1.0:
+                self.statusMessage.set(" Line space should be greater or equal to 1 ")
+                return 2 # Value is invalid number
+        except:
+            return 3     # Value not a number
+        return 0         # Value is a valid number
+    def Entry_Lspace_Callback(self, varName, index, mode):
+        self.entry_set(self.Entry_Lspace, self.Entry_Lspace_Check() )
+    #############################
+    def Entry_Cspace_Check(self):
+        try:
+            value = float(self.CSPACE.get())
+            if  value < 0.0:
+                self.statusMessage.set(" Character space should be greater than or equal to 0 ")
+                return 2 # Value is invalid number
+        except:
+            return 3     # Value not a number
+        return 0         # Value is a valid number
+    def Entry_Cspace_Callback(self, varName, index, mode):
+        self.entry_set(self.Entry_Cspace, self.Entry_Cspace_Check() )
+    #############################
+    def Entry_Wspace_Check(self):
+        try:
+            value = float(self.WSPACE.get())
+            if  value < 0.0:
+                self.statusMessage.set(" Word space should be greater than or equal to 0 ")
+                return 2 # Value is invalid number
+        except:
+            return 3     # Value not a number
+        return 0         # Value is a valid number
+    def Entry_Wspace_Callback(self, varName, index, mode):
+        self.entry_set(self.Entry_Wspace, self.Entry_Wspace_Check() )
+    #############################            
+    def Entry_Tangle_Check(self):
+        try:
+            value = float(self.TANGLE.get())
+            if  value <= -360.0 or value >= 360.0:
+                self.statusMessage.set(" Angle should be between -360 and 360 ")
+                return 2 # Value is invalid number
+        except:
+            return 3     # Value not a number
+        return 0         # Value is a valid number
+    def Entry_Tangle_Callback(self, varName, index, mode):
+        self.entry_set(self.Entry_Tangle, self.Entry_Tangle_Check() )
+    ############################# 
+    def Entry_Tradius_Check(self):
+        try:
+            value = float(self.TRADIUS.get())
+            if  value < 0.0:
+                self.statusMessage.set(" Radius should be greater than or equal to 0 ")
+                return 2 # Value is invalid number
+        except:
+            return 3     # Value not a number
+        return 0         # Value is a valid number
+    def Entry_Tradius_Callback(self, varName, index, mode):
+        self.entry_set(self.Entry_Tradius, self.Entry_Tradius_Check() )
+    # End Left Column #
+
+    # Right Column #
+    #############################
+    def Entry_Feed_Check(self):
+        try:
+            value = float(self.FEED.get())
+        except:
+            return 3     # Value not a number
+        return 1         # Value is a valid number changes do not require recalc        
+    def Entry_Feed_Callback(self, varName, index, mode):
+        self.entry_set(self.Entry_Feed,self.Entry_Feed_Check())
+    #############################
+    def Entry_Drate_Check(self):
+        try:
+            value = float(self.DRATE.get())
+        except:
+            return 3     # Value not a number
+        return 1         # Value is a valid number changes do not require recalc        
+    def Entry_Drate_Callback(self, varName, index, mode):
+        self.entry_set(self.Entry_Drate,self.Entry_Drate_Check())
+
+    #############################
+    # End Right Column #
+
+    
+    ######################################
+    #    Settings Window Call Backs      #
+    ######################################
+    def Entry_Xoffset_Check(self):
+        try:
+            value = float(self.xorigin.get())
+        except:
+            return 3     # Value not a number
+        return 1         # Value is a valid number changes do not require recalc
+    def Entry_Xoffset_Callback(self, varName, index, mode):
+        self.entry_set(self.Entry_Xoffset, self.Entry_Xoffset_Check())
+    #############################
+    def Entry_Yoffset_Check(self):
+        try:
+            value = float(self.yorigin.get())
+        except:
+            return 3     # Value not a number
+        return 1         # Value is a valid number changes do not require recalc        
+    def Entry_Yoffset_Callback(self, varName, index, mode):
+        self.entry_set(self.Entry_Yoffset,self.Entry_Yoffset_Check())
+    #############################
+    def Entry_ArcAngle_Check(self):
+        try:
+            value = float(self.segarc.get())
+        except:
+            return 3     # Value not a number
+        return 0         # Value is a valid number        
+    def Entry_ArcAngle_Callback(self, varName, index, mode):
+        self.entry_set(self.Entry_ArcAngle,self.Entry_ArcAngle_Check())
+    #############################
+    def Entry_Accuracy_Check(self):
+        try:
+            value = float(self.accuracy.get())
+        except:
+            return 3     # Value not a number
+        return 0         # Value is a valid number        
+    def Entry_Accuracy_Callback(self, varName, index, mode):
+        self.entry_set(self.Entry_Accuracy,self.Entry_Accuracy_Check())
+    #############################
+    def Entry_BoxGap_Check(self):
+        try:
+            value = float(self.boxgap.get())
+        except:
+            return 3     # Value not a number
+        return 0         # Value is a valid number        
+    def Entry_BoxGap_Callback(self, varName, index, mode):
+        self.entry_set(self.Entry_BoxGap,self.Entry_BoxGap_Check())
+    #############################
+    def Fontdir_Click(self, event):
+        win_id=self.grab_current()
+        newfontdir = askdirectory(mustexist=1,initialdir=self.fontdir.get() )
+        if newfontdir != "" and newfontdir != ():
+            self.fontdir.set(newfontdir.encode("utf-8"))
+        try:
+            win_id.withdraw()
+            win_id.deiconify()
+        except:
+            pass
+
+    ##########################################################################
+    ##########################################################################
+    def Check_All_Variables(self):
+        MAIN_error_cnt= \
+        self.entry_set(self.Entry_Yscale,  self.Entry_Yscale_Check()  ,2) +\
+        self.entry_set(self.Entry_Xscale,  self.Entry_Xscale_Check()  ,2) +\
+        self.entry_set(self.Entry_Lspace,  self.Entry_Lspace_Check()  ,2) +\
+        self.entry_set(self.Entry_Cspace,  self.Entry_Cspace_Check()  ,2) +\
+        self.entry_set(self.Entry_Wspace,  self.Entry_Wspace_Check()  ,2) +\
+        self.entry_set(self.Entry_Tangle,  self.Entry_Tangle_Check()  ,2) +\
+        self.entry_set(self.Entry_Tradius, self.Entry_Tradius_Check() ,2) +\
+        self.entry_set(self.Entry_Feed,    self.Entry_Feed_Check()    ,2) +\
+        self.entry_set(self.Entry_Drate,   self.Entry_Drate_Check()   ,2) 
+        
+        GEN_error_cnt= \
+        self.entry_set(self.Entry_ArcAngle,self.Entry_ArcAngle_Check(),2) +\
+        self.entry_set(self.Entry_Accuracy,self.Entry_Accuracy_Check(),2) +\
+        self.entry_set(self.Entry_BoxGap,  self.Entry_BoxGap_Check()  ,2) +\
+        self.entry_set(self.Entry_ArcAngle,self.Entry_ArcAngle_Check(),2) +\
+        self.entry_set(self.Entry_Accuracy,self.Entry_Accuracy_Check(),2) +\
+        self.entry_set(self.Entry_BoxGap,  self.Entry_BoxGap_Check()  ,2)
+
+        ERROR_cnt = MAIN_error_cnt + GEN_error_cnt
+
+        if (ERROR_cnt > 0):
+            self.statusbar.configure( bg = 'red' )
+        if (GEN_error_cnt > 0):
+            self.statusMessage.set(\
+                " Entry Error Detected: Check Entry Values in General Settings Window ")
+        if (MAIN_error_cnt > 0):
+            self.statusMessage.set(\
+                " Entry Error Detected: Check Entry Values in Main Window ")
+            
+        return ERROR_cnt        
+
+    ##########################################################################
+    ##########################################################################
+
+    def Entry_recalc_var_Callback(self, varName, index, mode):
+        self.Recalc_RQD()
+
+    def Entry_units_var_Callback(self, varName, index, mode):
+        if self.units.get() == 'in':
+            self.funits.set('in/min')
+        else:
+            self.funits.set('mm/min')
+
+    def Listbox_1_Click(self, event): 
+        labelL = []
+        for i in self.Listbox_1.curselection():
+            labelL.append( self.Listbox_1.get(i))
+        try:
+            self.fontfile.set(labelL[0])
+        except:
+            return
+        self.Read_font_file()
+        self.DoIt()
+
+    def Listbox_Key_Up(self, event):
+        try:
+            select_new = int(self.Listbox_1.curselection()[0])-1
+        except:
+            select_new = self.Listbox_1.size()-2
+        self.Listbox_1.selection_clear(0,END)
+        self.Listbox_1.select_set(select_new)
+        try:
+            self.fontfile.set(self.Listbox_1.get(select_new))
+        except:
+            return
+        self.Read_font_file()
+        self.DoIt()
+
+    def Listbox_Key_Down(self, event):
+        try:
+            select_new = int(self.Listbox_1.curselection()[0])+1
+        except:
+            select_new = 1
+        self.Listbox_1.selection_clear(0,END)
+        self.Listbox_1.select_set(select_new)
+        try:
+            self.fontfile.set(self.Listbox_1.get(select_new))
+        except:
+            return
+        self.Read_font_file()
+        self.DoIt()
+
+    def Entry_fontdir_Callback(self, varName, index, mode):
+        self.Listbox_1.delete(0, END)
+        self.Listbox_1.configure( bg = self.NormalColor )
+        try:
+            font_files=os.listdir(self.fontdir.get())
+            font_files.sort()
+        except:
+            font_files=" "
+        for name in font_files:
+            if str.find(name.upper(),'.CXF') != -1 :
+                self.Listbox_1.insert(END, name)
+        if len(self.fontfile.get()) < 4:
+            try:
+                self.fontfile.set(self.Listbox_1.get(0))
+            except:
+                self.fontfile.set(" ")
+        self.Read_font_file()
+        self.Recalc_RQD()
+    # End General Settings Callbacks
+    
+    def menu_File_Open_G_Code_File(self):
+        init_dir = (self.NC_FILE)
+        fileselect = askopenfilename(filetypes=[("Gcode Files","*.ipm"),\
+                                                ("All Files","*")],\
+                                                 initialdir=init_dir, )
+        
+        if fileselect != '' and fileselect != ():
+            self.Open_G_Code_File(fileselect)
+            self.DoIt()            
+
+    def Open_G_Code_File(self,filename):
+        boxsize = "0"
+        try:
+            fin = open(filename,'r')
+        except:
+            fmessage("Unable to open file: %s" %(filename))
+            return
+        text_codes=[]
+        ident = "ipmark_set"
+        for line in fin:
+            if ident in line:
+                if "TCODE" in line:
+                    for chr in line[line.find("TCODE"):].split():
+                        try:
+                            text_codes.append(int(chr))
+                        except:
+                            pass      
+                # BOOL
+                elif "show_axis"  in line:
+                    self.show_axis.set(line[line.find("show_axis"):].split()[1])
+                elif "show_box"   in line:
+                    self.show_box.set(line[line.find("show_box"):].split()[1])
+                elif "show_thick" in line:
+                    self.show_thick.set(line[line.find("show_thick"):].split()[1])
+                elif "flip"       in line:
+                    self.flip.set(line[line.find("flip"):].split()[1])
+                elif "mirror"     in line:
+                    self.mirror.set(line[line.find("mirror"):].split()[1])
+                elif "outer"  in line:
+                    self.outer.set(line[line.find("outer"):].split()[1])
+                elif "upper"      in line:
+                   self.upper.set(line[line.find("upper"):].split()[1])
+
+                   
+
+
+                # STRING.set()
+                elif "serialn"    in line:
+                    self.serialn.set(line[line.find("serialn"):].split()[1])
+                elif "YSCALE"     in line:
+                    self.YSCALE.set(line[line.find("YSCALE"):].split()[1])
+                elif "XSCALE"     in line:
+                    self.XSCALE.set(line[line.find("XSCALE"):].split()[1])
+                elif "LSPACE"     in line:
+                    self.LSPACE.set(line[line.find("LSPACE"):].split()[1])
+                elif "CSPACE"     in line:
+                    self.CSPACE.set(line[line.find("CSPACE"):].split()[1])
+                elif "WSPACE"     in line:
+                    self.WSPACE.set(line[line.find("WSPACE"):].split()[1])
+                elif "TANGLE"     in line:
+                    self.TANGLE.set(line[line.find("TANGLE"):].split()[1])
+                elif "TRADIUS"    in line:
+                    self.TRADIUS.set(line[line.find("TRADIUS"):].split()[1])
+                elif "DRATE"      in line:
+                    self.DRATE.set(line[line.find("DRATE"):].split()[1])
+                elif "SERNUM"      in line:
+                    self.SERNUM.set(line[line.find("SERNUM"):].split()[1])
+                elif "origin"     in line:
+                    self.origin.set(line[line.find("origin"):].split()[1])
+                elif "justify"    in line:
+                    self.justify.set(line[line.find("justify"):].split()[1])
+                elif "units"      in line:
+                    self.units.set(line[line.find("units"):].split()[1])
+                elif "xorig"   in line:
+                    self.xorigin.set(line[line.find("xorig"):].split()[1])
+                elif "yorig"    in line:
+                    self.yorigin.set(line[line.find("yorig"):].split()[1])
+                elif "segarc"     in line:
+                    self.segarc.set(line[line.find("segarc"):].split()[1])
+                elif "accuracy"   in line:
+                    self.accuracy.set(line[line.find("accuracy"):].split()[1])
+                    
+
+                elif "FEED"       in line:
+                    self.FEED.set(line[line.find("FEED"):].split()[1])
+                elif "fontfile"   in line:
+                    self.fontfile.set(line[line.find("fontfile"):].split("\042")[1]) 
+                elif "H_CALC"     in line:
+                    self.H_CALC.set(line[line.find("H_CALC"):].split()[1])
+                elif "plotbox"    in line:
+                    self.plotbox.set(line[line.find("plotbox"):].split()[1])
+                elif "boxgap"    in line:
+                    self.boxgap.set(line[line.find("boxgap"):].split()[1])
+                elif "boxsize"    in line:
+                    boxsize = line[line.find("boxsize"):].split()[1]
+
+                # STRING
+                elif "fontdir"    in line:
+                    self.fontdir.set(line[line.find("fontdir"):].split("\042")[1])
+                elif "input_type"    in line:  
+                    self.input_type.set(line[line.find("input_type"):].split()[1])
+                    
+        fin.close()
+        
+        file_full = self.fontdir.get() + "/" + self.fontfile.get()
+        fileName, fileExtension = os.path.splitext(file_full)
+        TYPE=fileExtension.upper()
+        
+
+                
+                
+        if boxsize!="0":
+            self.boxgap.set( float(boxsize) * float(self.STHICK.get()) )
+
+        
+        if text_codes != []:
+            try:
+                self.Input.delete(1.0,END)
+                for Ch in text_codes:
+                    self.Input.insert(END, "%c" %(int(Ch)))
+            except:
+                self.default_text = ''
+                for Ch in text_codes:
+                    self.default_text = self.default_text + "%c" %(Ch)
+        if self.units.get() == 'in':
+            self.funits.set('in/min')
+        else:
+            self.units.set('mm')
+            self.funits.set('mm/min')
+
+        try:
+            half_angle = radians( float(self.v_bit_angle.get())/2.0 )
+            self.maxcut.set("%.3f" %(-float(self.v_bit_dia.get())/2.0 /tan(half_angle)))
+        except:
+            self.maxcut.set("error")
+
+
+        temp_name, fileExtension = os.path.splitext(filename)
+        file_base=os.path.basename(temp_name)
+            
+        if self.initComplete == 1:
+            self.menu_Mode_Change()
+            #self.NC_FILE = filename
+            
+        self.DoIt()
+        
+
+    def menu_File_Save_G_Code_File(self):
+        if (self.Check_All_Variables() > 0):
+            return
+        
+       
+        self.WriteGCode()
+        init_dir = (self.NC_FILE)
+
+
+        fileName, fileExtension = os.path.splitext(self.NC_FILE)
+        init_file=os.path.basename(fileName)
+        if init_file == "None":          
+                init_file="text"
+            
+        filename = asksaveasfilename(defaultextension='.ipm', \
+                                     filetypes=[("Gcode Files","*.ipm"),("All Files","*")],\
+                                     initialdir=init_dir,\
+                                     initialfile= init_file )
+        
+        if filename != '' and filename != ():
+            #self.NC_FILE = filename
+            try:
+                fout = open(filename,'w')
+            except:
+                self.statusMessage.set("Unable to open file for writing: %s" %(filename))
+                self.statusbar.configure( bg = 'red' )
+                return
+            for line in self.gcode:
+                fout.write(line+'\n')
+            fout.close
+            self.statusMessage.set("File Saved: %s" %(filename))
+            self.statusbar.configure( bg = 'white' )
+            
+            
+    def menu_View_Refresh_Callback(self, varName, index, mode):
+        self.menu_View_Refresh()
+
+    def menu_View_Refresh(self):
+        dummy_event = Event()
+        dummy_event.widget=self.master
+        self.Master_Configure(dummy_event,1)
+        self.Plot_Data()
+
+    def menu_Mode_Change_Callback(self, varName, index, mode):
+        self.menu_View_Refresh()
+
+    def menu_Mode_Change(self):
+        dummy_event = Event()
+        dummy_event.widget=self.master
+        self.Master_Configure(dummy_event,1)
+
+        if self.input_type.get() == "text":
+            self.Read_font_file()
+        self.DoIt()
+
+    def menu_View_Recalculate(self):
+        self.DoIt()
+
+    def menu_File_Quit(self, event):
+        if message_ask_ok_cancel("Exit", "Exiting IPM Mark..."):
+            self.quit()
+
+    def menu_File_Shutdown(self, event):
+        if message_ask_ok_cancel("Shutdown", "Exiting IPM Mark and Shutting Down..."):
+            self.Shutdown_Click()
+        
+    def menu_Help_About(self):
+        about = "IPM-Mark \n"
+        about = about + "For Serial Number use ! in text \n"
+        about = about + "\n"
+        about = about + "www.IPMINC.com"
+        message_box("About IPM-Mark",about)
+
+    def menu_Home_Machine(self):
+        about = "IPM-Mark \n"
+        about = about + "Machine Must be homed!"
+        message_box("IPM-Mark",about)
+
+    def KEY_ESC(self, event):
+        if message_ask_ok_cancel("Exit", "Exiting IPM Mark..."):
+            self.menu_File_Quit(None)
+
+    def KEY_F1(self, event):
+        self.menu_Help_About()
+
+    def KEY_F2(self, event):
+        self.pwr_on()
+        
+    def KEY_F3(self, event):
+        self.home()
+
+    def KEY_F4(self, event):
+        self.start()
+
+    def CycleStart(self):
+        self.start()
+
+    def CapOff(self):
+        self.cap_off()
+    
+    def bindConfigure(self, event):
+        if not self.initComplete:
+            self.initComplete = 1
+            self.menu_Mode_Change()
+
+    def Master_Configure(self, event, update=0):
+        if event.widget != self.master:
+            return
+        
+        x = int(self.master.winfo_x())
+        y = int(self.master.winfo_y())
+        w = int(self.master.winfo_width())
+        h = int(self.master.winfo_height())
+        if (self.x, self.y) == (-1,-1):
+            self.x, self.y = x,y
+        if abs(self.w-w)>10 or abs(self.h-h)>10 or update==1:
+            ###################################################
+            #  Form changed Size (resized) adjust as required #
+            ###################################################
+            self.w=w
+            self.h=h
+            #canvas
+            But_W=200
+            But_H=100
+            But_Yoff=85
+            # Start Left Buttons
+            
+            Ybut=self.h-150
+            Xbut=12
+            
+            self.OpenFile.place(x=Xbut, y=Ybut-550, width=But_W, height=But_H)
+            self.SaveFile.place(x=Xbut, y=Ybut-440, width=But_W, height=But_H)
+            self.TxtSettings.place(x=Xbut, y=Ybut-330, width=But_W, height=But_H)
+            self.GenSettings.place(x=Xbut, y=Ybut-220, width=But_W, height=But_H)
+            self.ExitProg.place(x=Xbut, y=Ybut-110, width=But_W, height=But_H)
+            self.Recalculate.place(x=Xbut, y=Ybut, width=But_W, height=But_H)
+   
+
+            # Start Right Column
+            w_label=90
+            w_entry=60
+            w_units=35
+            
+            x_label_R=self.w - 220
+            x_entry_R=x_label_R+w_label+10        
+            x_units_R=x_entry_R+w_entry+5
+
+            
+            Yloc=100
+            self.Label_Xoffset.place(x=x_label_R, y=Yloc, width=w_label, height=28)
+            self.Label_Xoffset.configure(fg='grey', bg='navy')
+            self.Label_Xoffset_u.place(x=x_units_R+20, y=Yloc, width=w_units, height=28)
+            self.Label_Xoffset_u.configure(fg='grey', bg='navy')
+            self.Entry_Xoffset.place(x=x_entry_R, y=Yloc, width=w_entry+20, height=28)
+            Yloc=Yloc+50
+            self.Label_Yoffset.place(x=x_label_R, y=Yloc, width=w_label, height=28)
+            self.Label_Yoffset.configure(fg='grey', bg='navy')
+            self.Label_Yoffset_u.place(x=x_units_R+20, y=Yloc, width=w_units, height=28)
+            self.Label_Yoffset_u.configure(fg='grey', bg='navy')
+            self.Entry_Yoffset.place(x=x_entry_R, y=Yloc, width=w_entry+20, height=28)
+
+
+
+            # Buttons etc.
+            Ybut=self.h-150
+            self.Manual.place(x=x_label_R, y=Ybut-370, width=But_W, height=But_H)
+           
+            self.separator4.place(x=x_label_R, y=Ybut-200, width=w_label+75+40, height=2)
+
+            self.Home.place(x=x_label_R, y=Ybut-110, width=But_W, height=But_H)
+            self.Start.place(x=x_label_R, y=Ybut, width=But_W, height=But_H)
+   
+            self.PreviewCanvas.configure( width = self.w-455, height = self.h-300 )
+            self.PreviewCanvas_frame.place(x=220, y=10)
+            self.Input_Label.place(x=222, y=self.h-200, width=112, height=28, anchor=W)
+            self.Input_Label.configure(fg='grey', bg='navy')
+            self.Input_frame.place(x=222, y=self.h-150, width=self.w-455, height=75)
+            self.Label_sernum.place(x=x_label_R-200, y=self.h-200, width=w_label, height=28, anchor=W)
+            self.Label_sernum.configure(fg='grey', bg='navy')
+            self.Entry_sernum.place(x=x_label_R-110, y=self.h-200, width=w_entry, height=28, anchor=W)
+            
+
+
+    ############################################################################
+    # routine takes an x and y the point is rotated by angle returns new x,y   #
+    ############################################################################
+    def Rotn(self,x,y,angle,radius):
+        if radius > 0.0:
+            alpha = x / radius
+            xx = ( radius + y ) * sin(alpha)
+            yy = ( radius + y ) * cos(alpha)
+        elif radius < 0.0:
+            alpha = x / radius
+            xx = ( radius + y ) * sin(alpha)
+            yy = ( radius + y ) * cos(alpha)
+        else: #radius is 0
+            alpha = 0
+            xx = x
+            yy = y
+
+        rad = sqrt(xx * xx + yy * yy)
+        theta = atan2(yy,xx)
+        newx=rad * cos(theta + radians(angle) )
+        newy=rad * sin(theta + radians(angle) )
+        return newx,newy,alpha
+    
+    ############################################################################
+    # routine takes an x and a y scales are applied and returns new x,y tuple  #
+    ############################################################################
+    def CoordScale(self,x,y,xscale,yscale):
+        newx = x * xscale
+        newy = y * yscale
+        return newx,newy
+
+    def Plot_Line(self,XX1,YY1,XX2,YY2,midx,midy,cszw,cszh,PlotScale,col,radius=0):
+        x1 =  cszw/2 + (XX1-midx) / PlotScale
+        x2 =  cszw/2 + (XX2-midx) / PlotScale
+        y1 =  cszh/2 - (YY1-midy) / PlotScale
+        y2 =  cszh/2 - (YY2-midy) / PlotScale
+        if radius==0:
+            thick=1
+        else:
+            thick  =  radius*2 / PlotScale
+        self.segID.append( self.PreviewCanvas.create_line(x1,y1,x2,y2,fill = col, capstyle="round", width=thick))
+
+    def Plot_Circ(self,XX1,YY1,midx,midy,cszw,cszh,PlotScale,color,Rad,fill):
+        dd=Rad
+        x1 =  cszw/2 + (XX1-dd-midx) / PlotScale
+        x2 =  cszw/2 + (XX1+dd-midx) / PlotScale
+        y1 =  cszh/2 - (YY1-dd-midy) / PlotScale
+        y2 =  cszh/2 - (YY1+dd-midy) / PlotScale
+        if fill ==0:
+            self.segID.append( self.PreviewCanvas.create_oval(x1,y1,x2,y2, outline=color, fill=None, width=1 ))
+        else:
+            self.segID.append( self.PreviewCanvas.create_oval(x1,y1,x2,y2, outline=color, fill=color, width=0 ))
+
+    ############################################################################
+    # Routine finds the maximum radius that can be placed in the position      #
+    # xpt,ypt witout interfearing with other line segments (rmin is max R LOL) #
+    ############################################################################
+    def find_max_circle(self,xpt,ypt,rmin,char_num,seg_sin,seg_cos,corner,Acc,CHK_STRING):
+        global Zero
+        rtmp = rmin
+        
+        for linec in self.coords_check:
+            XYc = linec
+            xmaxt=max(XYc[0],XYc[2]) + rmin*2
+            xmint=min(XYc[0],XYc[2]) - rmin*2
+            ymaxt=max(XYc[1],XYc[3]) + rmin*2
+            ymint=min(XYc[1],XYc[3]) - rmin*2
+            if (xpt >= xmint and  ypt >= ymint and xpt <= xmaxt and  ypt <= ymaxt):
+                logic_full = True
+            else:
+                logic_full = False
+                continue
+
+            if (CHK_STRING == "chr"):
+                logic_full = logic_full and (char_num == int(XYc[5]))
+
+            if corner==1: 
+                logic_full = logic_full and ( (fabs(xpt-XYc[0]) > Acc) or (fabs(ypt-XYc[1]) > Acc) ) and \
+                    ( (fabs(xpt-XYc[2]) > Zero) or (fabs(ypt-XYc[3]) > Zero) )
+
+            if logic_full:
+                xc1 = (XYc[0]-xpt) * seg_cos - (XYc[1]-ypt) * seg_sin
+                yc1 = (XYc[0]-xpt) * seg_sin + (XYc[1]-ypt) * seg_cos
+                xc2 = (XYc[2]-xpt) * seg_cos - (XYc[3]-ypt) * seg_sin
+                yc2 = (XYc[2]-xpt) * seg_sin + (XYc[3]-ypt) * seg_cos
+
+                if fabs(xc2-xc1) < Zero and (yc2-yc1) != 0.0:
+                    rtmp=fabs(xc1)
+                    if max(yc1,yc2) >= rtmp and min(yc1,yc2) <= rtmp:
+                        rmin = min(rmin,rtmp)
+
+                elif fabs(yc2-yc1) < Zero and (xc2-xc1) != 0.0:
+                    if max(xc1,xc2) >= 0 and min(xc1,xc2) <= 0 and yc1 > Acc:
+                        rtmp=yc1/2
+                        rmin = min(rmin,rtmp)
+
+                if fabs(yc2-yc1) > Zero and fabs(xc2-xc1) > Zero:
+                    m = (yc2-yc1)/(xc2-xc1)
+                    b = yc1 - m*xc1
+                    sq = m+1/m
+                    A = 1 + m*m - 2*m*sq
+                    B = -2*b*sq
+                    C = -b*b
+                    try:
+                        sq_root = sqrt(B*B-4*A*C)
+                        xq1 = (-B + sq_root)/(2*A)
+
+                        if xq1 >= min(xc1,xc2) and xq1 <= max(xc1,xc2):
+                            rtmp = xq1*sq + b
+                            if rtmp >= 0.0:
+                                rmin=min(rmin,rtmp)
+                            
+                        xq2 = (-B - sq_root)/(2*A)
+                        yq2 = m*xq2+b
+
+                        if xq2 >= min(xc1,xc2) and xq2 <= max(xc1,xc2):  
+                            rtmp = xq2*sq + b
+                            if rtmp >= 0.0:
+                                rmin=min(rmin,rtmp)
+                    except:
+                        pass
+                    
+                if yc1 > Zero: 
+                    rtmp = (xc1*xc1 + yc1*yc1) / (2*yc1)
+                    rmin=min(rmin,rtmp)
+                    
+                if yc2 > Zero:
+                    rtmp = (xc2*xc2 + yc2*yc2) / (2*yc2)
+                    rmin=min(rmin,rtmp)
+        return rmin
+
+    def Recalculate_RQD_Nocalc(self, event):
+        self.statusbar.configure( bg = 'yellow' )
+        self.Input.configure( bg = 'yellow' )
+        self.statusMessage.set(" Recalculation required.")
+
+    def Recalculate_RQD_Click(self, event):
+        self.statusbar.configure( bg = 'yellow' )
+        self.statusMessage.set(" Recalculation required.")
+        self.DoIt()
+
+    def Recalc_RQD(self):
+        self.statusbar.configure( bg = 'yellow' )
+        self.statusMessage.set(" Recalculation required.")
+        self.DoIt()
+
+
+    ##########################################
+    #          Read Font File                #
+    ##########################################
+    def Read_font_file(self):
+        self.font = {}
+        file_full = self.fontdir.get() + "/" + self.fontfile.get()
+        if ( not os.path.isfile(file_full) ):
+            return
+        self.statusbar.configure( bg = 'yellow' )
+        self.statusMessage.set(" Reading File.........")
+        self.master.update_idletasks()
+        
+        fileName, fileExtension = os.path.splitext(file_full)
+        self.current_input_file.set( os.path.basename(file_full) )
+        
+        SegArc    =  float(self.segarc.get())
+        TYPE=fileExtension.upper()
+        if TYPE=='.CXF':
+            try:                 
+                file = open(file_full)
+            except:
+                self.statusMessage.set("Unable to Open CXF File: %s" %(file_full))
+                self.statusbar.configure( bg = 'red' )
+                return
+            self.font = parse(file,SegArc)  # build stroke lists from font file
+            file.close()    
+        else:
+            pass
+        
+        self.entry_set(self.Entry_ArcAngle,self.Entry_ArcAngle_Check(),1)
+        self.menu_View_Refresh()
+
+
+        
+    ##########################################
+    #        CANVAS PLOTTING STUFF           #
+    ##########################################
+    def Plot_Data(self):
+        self.master.update_idletasks()
+        # erase old segs/display objects
+        self.PreviewCanvas.delete(ALL)
+        self.segID = []
+
+        cszw = int(self.PreviewCanvas.cget("width"))
+        cszh = int(self.PreviewCanvas.cget("height"))
+        buff=10
+
+        maxx = self.MAXX
+        minx = self.MINX
+        maxy = self.MAXY
+        miny = self.MINY
+        midx=(maxx+minx)/2
+        midy=(maxy+miny)/2
+
+        if self.cut_type.get() == "v-carve": 
+            Thick = 0.0
+        else:
+            Thick   = float(self.STHICK.get())
+
+        if self.input_type.get() == "text":
+            Radius_in =  float(self.TRADIUS.get())
+        else:
+            Radius_in = 0.0
+            
+        PlotScale = max((maxx-minx+Thick)/(cszw-buff), (maxy-miny+Thick)/(cszh-buff))
+        if PlotScale <= 0:
+            PlotScale=1.0
+        self.pscale = PlotScale
+
+        Radius_plot = 0
+        if self.plotbox.get() != "no_box" and self.cut_type.get() == "engrave": 
+            if Radius_in != 0:
+                Radius_plot=  float(self.RADIUS_PLOT)
+
+        x_lft = cszw/2 + (minx-midx) / PlotScale
+        x_rgt = cszw/2 + (maxx-midx) / PlotScale
+        y_bot = cszh/2 + (maxy-midy) / PlotScale
+        y_top = cszh/2 + (miny-midy) / PlotScale
+        
+        if self.show_box.get() == True:
+            self.segID.append( self.PreviewCanvas.create_rectangle(
+                    x_lft, y_bot, x_rgt, y_top, fill="gray80", outline="gray80", width = 0) )
+            
+        if Radius_in != 0:
+            Rx_lft = cszw/2 + ( -Radius_in-midx)  / PlotScale
+            Rx_rgt = cszw/2 + (  Radius_in-midx)  / PlotScale
+            Ry_bot = cszh/2 + (  Radius_in+midy)  / PlotScale
+            Ry_top = cszh/2 + ( -Radius_in+midy)  / PlotScale
+            self.segID.append( self.PreviewCanvas.create_oval(Rx_lft, Ry_bot, Rx_rgt, Ry_top, outline="gray90", width = 0, dash=3) )
+
+        if self.show_thick.get() == True:
+            plot_width = Thick / PlotScale
+        else:
+            plot_width = 1.0
+
+        # Plot circle radius with radius equal to Radius_plot
+        if Radius_plot != 0:
+            Rpx_lft = cszw/2 + ( -Radius_plot-midx)  / PlotScale
+            Rpx_rgt = cszw/2 + (  Radius_plot-midx)  / PlotScale
+            Rpy_bot = cszh/2 + (  Radius_plot+midy)  / PlotScale
+            Rpy_top = cszh/2 + ( -Radius_plot+midy)  / PlotScale
+            self.segID.append( self.PreviewCanvas.create_oval(Rpx_lft, Rpy_bot, Rpx_rgt, Rpy_top, outline="black", width = plot_width) )
+
+        for line in self.coords:
+            XY = line
+            x1 =  cszw/2 + (XY[0]-midx) / PlotScale
+            x2 =  cszw/2 + (XY[2]-midx) / PlotScale
+            y1 =  cszh/2 - (XY[1]-midy) / PlotScale
+            y2 =  cszh/2 - (XY[3]-midy) / PlotScale
+            self.segID.append( self.PreviewCanvas.create_line(x1,y1,x2,y2,fill = 'black', \
+                                                                  width=plot_width , \
+                                                                  capstyle='round' ))
+        XOrigin   =  float(self.xorigin.get())
+        YOrigin   =  float(self.yorigin.get())
+        axis_length=(maxx-minx)/4
+        axis_x1 =  cszw/2 + (-midx             + XOrigin ) / PlotScale
+        axis_x2 =  cszw/2 + ( axis_length-midx + XOrigin ) / PlotScale
+        axis_y1 =  cszh/2 - (-midy             + YOrigin ) / PlotScale
+        axis_y2 =  cszh/2 - ( axis_length-midy + YOrigin ) / PlotScale
+
+
+
+        if self.show_axis.get() == True:
+            # Plot coordinate system origin
+            self.segID.append( self.PreviewCanvas.create_line(axis_x1,axis_y1,\
+                                                                  axis_x2,axis_y1,\
+                                                                  fill = 'red'  , width = 0))
+            self.segID.append( self.PreviewCanvas.create_line(axis_x1,axis_y1,\
+                                                                  axis_x1,axis_y2,\
+                                                                  fill = 'green', width = 0))
+
+    ############################################################################
+    #                         Perform  Calculations                            #
+    ############################################################################
+    def DoIt(self):
+        RunSerial = bool(self.serialn.get())
+        k = 0
+        if self.initComplete == 0:
+            return
+
+        if (self.Check_All_Variables() > 0):
+            return
+
+        self.statusbar.configure( bg = 'yellow' )
+        self.statusMessage.set(" Calculating.........")
+        self.master.update_idletasks()
+
+        # erase old data
+        self.gcode   = []
+        self.svgcode = []
+        self.coords  = []
+        self.vcoords = []
+        self.clean_coords = []
+        self.clean_segment=[]
+        self.clean_coords_sort=[]
+        self.v_clean_coords_sort=[]
+        
+        self.RADIUS_PLOT = 0
+
+        for seg in self.segID:
+            self.PreviewCanvas.delete(seg)
+        self.segID = []
+        
+        if len(self.font) == 0:
+            self.statusbar.configure( bg = 'red' )
+            if self.input_type.get() == "text":
+                self.statusMessage.set("No Font Characters Loaded")
+            else:
+                self.statusMessage.set("No Image Loaded")
+            return
+    
+        if RunSerial > k:
+            SN        =  self.SERNUM.get()
+            String    =  self.Input.get(1.0,END)
+            String    =  String.replace('!','%s' %(SN))
+            Radius_in =  float(self.TRADIUS.get())
+        else:
+            String    =  self.Input.get(1.0,END)
+            Radius_in =  float(self.TRADIUS.get())
+        try:
+            SegArc    =  float(self.segarc.get())
+            YScale_in =  float(self.YSCALE.get() )  
+            CSpaceP   =  float(self.CSPACE.get() )
+            WSpaceP   =  float(self.WSPACE.get() )
+            LSpace    =  float(self.LSPACE.get() )
+            Angle     =  float(self.TANGLE.get() )
+            Thick     =  float(self.STHICK.get() )
+            XOrigin   =  float(self.xorigin.get())
+            YOrigin   =  float(self.yorigin.get())
+            v_flop    =  bool(self.v_flop.get())
+        except:
+            self.statusMessage.set(" Unable to create paths.  Check Settings Entry Values.")
+            self.statusbar.configure( bg = 'red' )
+            return
+
+
+        line_maxx = []
+        line_maxy = []
+        line_maxa = []
+        line_mina = []
+        line_miny = []
+        line_minx = []
+            
+        maxx_tmp = -99991.0
+        maxy_tmp = -99992.0
+        maxa_tmp = -99993.0
+        mina_tmp =  99993.0
+        miny_tmp =  99994.0
+        minx_tmp =  99995.0
+
+        font_word_space  = 0
+        font_line_height = 0
+        font_char_width = 0
+        font_used_height = 0
+        font_used_width = 0
+        font_used_depth = 0
+
+        ################################
+        ##      Font Index Preview    ##
+        ################################
+        if self.fontdex.get() == True:
+            Radius_in = 0.0
+            String = ""
+            for key in self.font:
+                if int(key)<256:
+                    String = String + chr(key)
+            Strings = sorted(String)
+            mcnt = 0
+            String =""
+            for char in Strings:
+                mcnt = mcnt+1
+                String = String + char
+                if mcnt > 15:
+                    String = String + '\n'
+                    mcnt = 0
+
+        ##################################
+        ## Font Height/Width Calculation #
+        ##################################
+        for char in String:
+            try:
+                font_used_height = max( self.font[ord(char)].get_ymax(), font_used_height )
+                font_used_width  = max( self.font[ord(char)].get_xmax(), font_used_width  )
+                font_used_depth  = min( self.font[ord(char)].get_ymin(), font_used_depth  )
+            except:
+                pass
+            
+        if self.H_CALC.get() == "max_all":
+            font_line_height = max(self.font[key].get_ymax() for key in self.font)
+            font_line_depth  = min(self.font[key].get_ymin() for key in self.font)
+        elif self.H_CALC.get() == "max_use":
+            font_line_height = font_used_height
+            font_line_depth  = font_used_depth
+
+        if font_line_height > 0:
+            YScale = (YScale_in-Thick)/(font_line_height-font_line_depth)
+        else:
+            self.statusbar.configure( bg = 'red' )
+            if self.H_CALC.get() == "max_all":
+                self.statusMessage.set("No Font Characters Found")
+            elif self.H_CALC.get() == "max_use":
+                self.statusMessage.set("Input Characters Were Not Found in the Current Font")
+            return
+
+        font_char_width  = max(self.font[key].get_xmax() for key in self.font)
+        font_word_space =  font_char_width * (WSpaceP/100.0)
+        
+        XScale = float(self.XSCALE.get())  * YScale / 100
+        font_char_space =  font_char_width * (CSpaceP /100.0)
+
+        if Radius_in != 0.0:
+            if self.outer.get() == True:
+                if self.upper.get() == True:
+                    Radius =  Radius_in + Thick/2 + YScale*(-font_line_depth)
+                else:
+                    Radius = -Radius_in - Thick/2 - YScale*(font_line_height)
+            else:
+                if self.upper.get() == True:
+                    Radius =  Radius_in - Thick/2 - YScale*(font_line_height)
+                else:
+                    Radius = -Radius_in + Thick/2 + YScale*(-font_line_depth)
+        else:
+            Radius =  Radius_in
+            
+        font_line_space = (font_line_height - font_line_depth + Thick/YScale) * LSpace
+        
+        max_vals=[]
+
+        xposition  = 0.0 
+        yposition  = 0.0
+        line_cnt = 0.0
+        char_cnt = 0
+        no_font_record = []
+        message2 = ""
+        for char in String:
+            char_cnt = char_cnt + 1
+            
+            if char == ' ':
+                xposition += font_word_space
+                continue
+            if char == '\t':
+                xposition += 3*font_word_space
+                continue
+            if char == '\n':
+                xposition = 0
+                yposition += font_line_space 
+                line_cnt = line_cnt+1
+                line_minx.append(minx_tmp)
+                line_miny.append(miny_tmp)
+                line_maxx.append(maxx_tmp)
+                line_maxy.append(maxy_tmp)
+                line_maxa.append(maxa_tmp)
+                line_mina.append(mina_tmp)
+                maxx_tmp = -99919.0
+                maxy_tmp = -99929.0
+                maxa_tmp = -99939.0
+                mina_tmp =  99949.0
+                miny_tmp =  99959.0
+                minx_tmp =  99969.0
+                continue
+
+            first_stroke = True
+            try:
+                font_line_height = self.font[ord(char)].get_ymax()
+            except:
+                flag=0
+                for norec in no_font_record:
+                    if norec == char:
+                        flag=1
+                if flag == 0: 
+                    no_font_record.append(char)
+                    message2 = ", CHECK OUTPUT! Some characters not found in font file."
+                continue
+            for stroke in self.font[ord(char)].stroke_list:
+                x1 = stroke.xstart + xposition
+                y1 = stroke.ystart - yposition
+                x2 = stroke.xend   + xposition
+                y2 = stroke.yend   - yposition
+                        
+                # Perform scaling
+                x1,y1 = self.CoordScale(x1,y1,XScale,YScale)
+                x2,y2 = self.CoordScale(x2,y2,XScale,YScale)
+                
+                self.coords.append([x1,y1,x2,y2,line_cnt,char_cnt])
+                        
+                maxx_tmp = max(maxx_tmp, x1, x2)
+                minx_tmp = min(minx_tmp, x1, x2) 
+                miny_tmp = min(miny_tmp, y1, y2) 
+                maxy_tmp = max(maxy_tmp, y1, y2)
+                
+            char_width = self.font[ord(char)].get_xmax() # move over for next character
+            xposition += font_char_space + char_width
+        #END Char in String
+
+        maxx = maxy = -99999.0
+        miny = minx =  99999.0
+        cnt=0
+
+        for maxx_val in line_maxx:
+            maxx = max( maxx, line_maxx[cnt] )
+            minx = min( minx, line_minx[cnt] ) 
+            miny = min( miny, line_miny[cnt] ) 
+            maxy = max( maxy, line_maxy[cnt] )
+            cnt=cnt+1
+        ##########################################
+        #      TEXT LEFT JUSTIFY STUFF           #
+        ##########################################
+        if self.justify.get() == "Left":
+            pass
+        ##########################################
+        #          TEXT CENTERING STUFF          #
+        ##########################################
+        if self.justify.get() == "Center":
+            cnt=0
+            for line in self.coords:
+                XY = line
+                line_num = int(XY[4])
+                try:
+                    self.coords[cnt][0]=XY[0] + (maxx - line_maxx[line_num])/2 
+                    self.coords[cnt][2]=XY[2] + (maxx - line_maxx[line_num])/2
+                except:
+                    pass
+                cnt=cnt+1
+                
+        ##########################################
+        #        TEXT RIGHT JUSTIFY STUFF        #
+        ##########################################
+        if self.justify.get() == "Right":
+            for line in self.coords:
+                XY = line
+                line_num = int(XY[4])
+                try:
+                    XY[0]=XY[0] + (maxx - line_maxx[line_num]) 
+                    XY[2]=XY[2] + (maxx - line_maxx[line_num])
+                except:
+                    pass
+                cnt=cnt+1
+
+        ##########################################
+        #         TEXT ON RADIUS STUFF           #
+        ##########################################
+        mina =  99996.0
+        maxa = -99993.0
+        if Radius != 0.0:
+            for line in self.coords:
+                XY = line
+                XY[0],XY[1],A1 = self.Rotn(XY[0],XY[1],0,Radius)
+                XY[2],XY[3],A2 = self.Rotn(XY[2],XY[3],0,Radius)
+                maxa = max(maxa, A1, A2)
+                mina = min(mina, A1, A2)
+            mida = (mina+maxa)/2
+            ##########################################
+            #         TEXT LEFT JUSTIFY STUFF        #
+            ##########################################
+            if self.justify.get() == "Left":
+                pass
+            ##########################################
+            #          TEXT CENTERING STUFF          #
+            ##########################################
+            if self.justify.get() == "Center":
+                for line in self.coords:
+                    XY = line
+                    XY[0],XY[1] = Transform(XY[0],XY[1],mida)
+                    XY[2],XY[3] = Transform(XY[2],XY[3],mida)
+            ##########################################
+            #        TEXT RIGHT JUSTIFY STUFF        #
+            ##########################################
+            if self.justify.get() == "Right":
+                for line in self.coords:
+                    XY = line
+                    if self.upper.get() == True:
+                        XY[0],XY[1] = Transform(XY[0],XY[1],maxa)
+                        XY[2],XY[3] = Transform(XY[2],XY[3],maxa) 
+                    else:
+                        XY[0],XY[1] = Transform(XY[0],XY[1],mina)
+                        XY[2],XY[3] = Transform(XY[2],XY[3],mina) 
+
+        ##########################################
+        #    TEXT FLIP / MIRROR STUFF / ANGLE    #
+        ##########################################
+        maxx  = -99991.0
+        maxy  = -99992.0
+        miny  =  99994.0
+        minx  =  99995.0
+        maxr2 =  0.0
+        for line in self.coords:
+            XY = line
+            if Angle != 0.0:
+                XY[0],XY[1],A1 = self.Rotn(XY[0],XY[1],Angle,0)
+                XY[2],XY[3],A2 = self.Rotn(XY[2],XY[3],Angle,0)
+
+            if self.mirror.get() == True:
+                XY[0] = -XY[0] 
+                XY[2] = -XY[2]
+                v_flop  = not(v_flop)
+                
+            if self.flip.get() == True:
+                XY[1] = -XY[1] 
+                XY[3] = -XY[3]
+                v_flop = not(v_flop)
+                
+            maxx  = max(maxx,  XY[0], XY[2])
+            maxy  = max(maxy,  XY[1], XY[3])
+
+            minx  = min(minx,  XY[0], XY[2])
+            miny  = min(miny,  XY[1], XY[3])
+
+            maxr2 = max(maxr2, float(XY[0]*XY[0]+XY[1]*XY[1]), float(XY[2]*XY[2]+XY[3]*XY[3]))
+
+    
+        maxx = maxx + Thick/2
+        maxy = maxy + Thick/2
+        minx = minx - Thick/2
+        miny = miny - Thick/2
+
+        midx = (minx+maxx)/2
+        midy = (miny+maxy)/2
+
+
+        ##########################################
+        #         ORIGIN LOCATING STUFF          #
+        ##########################################
+        CASE = str(self.origin.get())
+        if     CASE == "Top-Left":
+            x_zero = minx
+            y_zero = maxy
+        elif   CASE == "Top-Center":
+            x_zero = midx
+            y_zero = maxy
+        elif   CASE == "Top-Right":
+            x_zero = maxx
+            y_zero = maxy
+        elif   CASE == "Mid-Left":
+            x_zero = minx
+            y_zero = midy
+        elif   CASE == "Mid-Center":
+            x_zero = midx
+            y_zero = midy
+        elif   CASE == "Mid-Right":
+            x_zero = maxx
+            y_zero = midy
+        elif   CASE == "Bot-Left":
+            x_zero = minx
+            y_zero = miny
+        elif   CASE == "Bot-Center":
+            x_zero = midx
+            y_zero = miny
+        elif   CASE == "Bot-Right":
+            x_zero = maxx
+            y_zero = miny
+        elif   CASE == "Arc-Center":
+            x_zero = 0
+            y_zero = 0
+        else:          #"Default"
+            x_zero = 0
+            y_zero = 0     
+
+        cnt=0
+        for line in self.coords:
+            XY = line
+            self.coords[cnt][0] = XY[0] - x_zero + XOrigin 
+            self.coords[cnt][1] = XY[1] - y_zero + YOrigin 
+            self.coords[cnt][2] = XY[2] - x_zero + XOrigin 
+            self.coords[cnt][3] = XY[3] - y_zero + YOrigin
+            cnt=cnt+1
+            
+        self.MAXX=maxx - x_zero + XOrigin
+        self.MINX=minx - x_zero + XOrigin
+        self.MAXY=maxy - y_zero + YOrigin
+        self.MINY=miny - y_zero + YOrigin
+        
+        self.Xzero = x_zero
+        self.Yzero = y_zero
+        
+        # Reset Staus Bar and Entry Fields
+        self.Input.configure(         bg = 'white' )
+        self.entry_set(self.Entry_Yscale,  self.Entry_Yscale_Check()  ,1)
+        self.entry_set(self.Entry_Xscale,  self.Entry_Xscale_Check()  ,1)
+        self.entry_set(self.Entry_Lspace,  self.Entry_Lspace_Check()  ,1)
+        self.entry_set(self.Entry_Cspace,  self.Entry_Cspace_Check()  ,1)
+        self.entry_set(self.Entry_Wspace,  self.Entry_Wspace_Check()  ,1)
+        self.entry_set(self.Entry_Tangle,  self.Entry_Tangle_Check()  ,1)
+        self.entry_set(self.Entry_Tradius, self.Entry_Tradius_Check() ,1) 
+        self.entry_set(self.Entry_Feed,    self.Entry_Feed_Check()    ,1)
+        self.entry_set(self.Entry_Drate,   self.Entry_Drate_Check()   ,1)
+        self.entry_set(self.Entry_BoxGap,  self.Entry_BoxGap_Check()  ,1)
+        self.entry_set(self.Entry_Accuracy,self.Entry_Accuracy_Check(),1)
+
+        self.statusMessage.set("Bounding Box = "    + 
+                               "%.3g" % (maxx-minx)      + 
+                               " %s " % self.units.get() +  
+                               " x " +  
+                               "%.3g" % (maxy-miny)      + 
+                               " %s " % self.units.get() + 
+                               " %s" % message2)
+
+        if no_font_record != []:
+            self.statusbar.configure( bg = 'orange' )
+            fmessage('Characters not found in font file:',FALSE)
+            fmessage("(",FALSE)
+            for entry in no_font_record:
+                fmessage( "%s," %(entry),FALSE)
+            fmessage(")")
+            
+        self.Plot_Data()
+        ################
+        #   End DoIt   #
+        ################
+
+
+        
+    def Find_Paths(self,check_coords_in,clean_dia,Radjust,clean_step,skip,direction):
+        check_coords=[]
+        
+        
+        if direction == "Y":
+            cnt = -1
+            for line in check_coords_in:
+                cnt=cnt+1
+                XY=line
+                check_coords.append([XY[1],XY[0],XY[2]])
+        else:
+            check_coords=check_coords_in
+
+        minx_c=0
+        maxx_c=0
+        miny_c=0
+        maxy_c=0
+        if len(check_coords) > 0:
+            minx_c = check_coords[0][0]-check_coords[0][2]
+            maxx_c = check_coords[0][0]+check_coords[0][2]
+            miny_c = check_coords[0][1]-check_coords[0][2]
+            maxy_c = check_coords[0][1]+check_coords[0][2]
+        for line in check_coords:
+            XY    = line
+            minx_c = min(minx_c, XY[0]-XY[2] )
+            maxx_c = max(maxx_c, XY[0]+XY[2] )
+            miny_c = min(miny_c, XY[1]-XY[2] )
+            maxy_c = max(maxy_c, XY[1]+XY[2] )
+                    
+        DX = clean_dia*clean_step
+        DY = DX
+        Xclean_coords=[]
+        Xclean_coords_short=[]
+        
+        if direction != "None":
+            #########################################################################
+            # Find ends of horizontal lines for carving cleanup
+            #########################################################################
+            loop_cnt=0
+            Y = miny_c
+            line_cnt = skip-1
+            while Y <= maxy_c:
+                line_cnt = line_cnt+1
+                X  = minx_c
+                x1 = X
+                x2 = X
+                x1_old = x1
+                x2_old = x2
+
+                # Find relevent clean_coord_data
+                ################################
+                temp_coords=[]
+                for line in check_coords:
+                    XY=line
+                    if Y < XY[1]+XY[2] and Y > XY[1]-XY[2]:
+                        temp_coords.append(XY)
+                ################################
+                
+                while X <= maxx_c:
+                    for line in temp_coords:
+                        XY=line
+                        h = XY[0]
+                        k = XY[1]
+                        R = XY[2]-Radjust
+                        dist=sqrt((X-h)**2 + (Y-k)**2)
+                        if dist <= R:
+                            Root = sqrt(R**2 - (Y-k)**2)
+                            XL = h-Root
+                            XR = h+Root
+                            if XL < x1:
+                                x1 = XL
+                            if XR > x2:
+                                x2 = XR
+                    if x1==x2:
+                        X  = X+DX
+                        x1 = X
+                        x2 = X
+                    elif (x1 == x1_old) and (x2 == x2_old):
+                        loop_cnt=loop_cnt+1
+                        Xclean_coords.append([x1,Y,loop_cnt])
+                        Xclean_coords.append([x2,Y,loop_cnt])
+                        if line_cnt == skip: 
+                            Xclean_coords_short.append([x1,Y,loop_cnt])
+                            Xclean_coords_short.append([x2,Y,loop_cnt])
+                            
+                        X  = X+DX
+                        x1 = X
+                        x2 = X
+                    else:
+                        X = x2
+                    x1_old = x1
+                    x2_old = x2
+                if line_cnt == skip:
+                    line_cnt = 0
+                Y=Y+DY
+            #########################################################################
+
+
+################################################################################
+#                         Manual Window                                        #
+################################################################################  
+    def Manual_Window(self):
+        man_win = Toplevel(width=1024, height=768)
+        man_win.grab_set() # Use grab_set to prevent user input in the main window during calculations
+        man_win.resizable(0,0)
+        man_win.title('Manual')
+        man_win.iconname("Manual")
+        man_win.attributes('-fullscreen','1')
+        
+        man_win.update_idletasks()
+        w_label=90
+        w_entry=60
+        w_units=35
+        x_label_R=self.w - 220
+        x_entry_R=x_label_R+w_label+10        
+        x_units_R=x_entry_R+w_entry+5
+        Ybut=30
+        Xbut=412
+
+        self.Label_Hcalc = Label(man_win,text="Use Arrows to Move Head.")
+        self.Label_Hcalc.place(x=Xbut-80, y=Ybut, width=400, height=28)
+        
+        Ybut=Ybut+150
+        self.X_Plus = Button(man_win,text="X+")
+        self.X_Plus.place(x=Xbut+110, y=Ybut+110, width=200, height=100, anchor="w")
+        self.X_Plus.bind("<ButtonPress-1>", self.X_plus)
+        self.X_Plus.bind("<ButtonRelease-1>", self.Axis_Stop)
+
+        self.X_Minus = Button(man_win,text="X-")
+        self.X_Minus.place(x=Xbut-110, y=Ybut+110, width=200, height=100, anchor="w")
+        self.X_Minus.bind("<ButtonPress-1>", self.X_minus)
+        self.X_Minus.bind("<ButtonRelease-1>", self.Axis_Stop)
+        
+        self.Y_Plus = Button(man_win,text="Y+")
+        self.Y_Plus.place(x=Xbut, y=Ybut, width=200, height=100, anchor="w")
+        self.Y_Plus.bind("<ButtonPress-1>", self.Y_plus)
+        self.Y_Plus.bind("<ButtonRelease-1>", self.Axis_Stop)
+
+        self.Y_Minus = Button(man_win,text="Y-")
+        self.Y_Minus.place(x=Xbut, y=Ybut+220, width=200, height=100, anchor="w")
+        self.Y_Minus.bind("<ButtonPress-1>", self.Y_minus)
+        self.Y_Minus.bind("<ButtonRelease-1>", self.Axis_Stop)
+
+        self.Half_Speed = Button(man_win,text="Slow/Fast")
+        self.Half_Speed.config(font=('calibri',(13)))
+        self.Half_Speed.place(x=Xbut-110, y=Ybut, width=100, height=100, anchor="w")
+        self.Half_Speed.bind("<ButtonPress-1>", self.JogRate)
+
+        self.Ding = Button(man_win,text="Test Fire")
+        self.Ding.config(font=('calibri',(13)))
+        self.Ding.place(x=Xbut+310, y=Ybut, width=100, height=100, anchor="e")
+        self.Ding.bind("<ButtonPress-1>", self.Ding_Pin)
+        self.Ding.bind("<ButtonRelease-1>", self.Stop_Ding)
+              
+        self.Label_Xoffset = Label(man_win,text="X Offset")
+        self.Label_Xoffset_u = Label(man_win,textvariable=self.units, anchor=W)
+        self.Entry_Xoffset = Entry(man_win,width="5",justify="center")
+        self.Entry_Xoffset.configure(textvariable=self.xorigin)
+        self.Entry_Xoffset.bind('<Return>', self.Recalculate_Click)
+        self.xorigin.trace_variable("w", self.Entry_Xoffset_Callback)
+        
+        Yloc=100
+        self.Label_Xoffset.place(x=x_label_R, y=Yloc, width=w_label, height=28)
+        self.Label_Xoffset_u.place(x=x_units_R+20, y=Yloc, width=w_units, height=28)
+        self.Entry_Xoffset.place(x=x_entry_R, y=Yloc, width=w_entry+20, height=28)
+
+        self.Label_Yoffset = Label(man_win,text="Y Offset")
+        self.Label_Yoffset_u = Label(man_win,textvariable=self.units, anchor=W)
+        self.Entry_Yoffset = Entry(man_win,width="5",justify="center")
+        self.Entry_Yoffset.configure(textvariable=self.yorigin)
+        self.Entry_Yoffset.bind('<Return>', self.Recalculate_Click)
+        self.yorigin.trace_variable("w", self.Entry_Yoffset_Callback)
+
+        Yloc=Yloc+50
+        self.Label_Yoffset.place(x=x_label_R, y=Yloc, width=w_label, height=28)
+        self.Label_Yoffset_u.place(x=x_units_R+20, y=Yloc, width=w_units, height=28)
+        self.Entry_Yoffset.place(x=x_entry_R, y=Yloc, width=w_entry+20, height=28)
+        
+        Ybut=Ybut+400
+        self.Man_Capture = Button(man_win,text="Capture Offset",command=self.CapOff)
+        self.Man_Capture.place(x=Xbut-50, y=Ybut, width=300, height=100, anchor="w")
+
+        self.Man_Close = Button(man_win,text="Home and Close",command=self.Home_Close_Current_Window_Click)
+        self.Man_Close.place(x=Xbut-50, y=Ybut+110, width=300, height=100, anchor="w")
+        
+        if not s.estop and s.enabled and (s.interp_state == linuxcnc.INTERP_IDLE):
+            c.mode(linuxcnc.MODE_MANUAL)
+            c.wait_complete()
+
+################################################################################
+#                         General Settings Window                              #
+################################################################################  
+    def GEN_Settings_Window(self):
+        gen_settings = Toplevel(width=1024, height=768)
+        gen_settings.grab_set() # Use grab_set to prevent user input in the main window during calculations
+        gen_settings.resizable(0,0)
+        gen_settings.title('Settings')
+        gen_settings.iconname("Settings")
+        gen_settings.attributes('-fullscreen','1')
+       
+        D_Yloc  = 20
+        D_dY = 40
+        xd_label_L = 100
+
+        w_label=180
+        w_entry=80
+        w_units=100
+        xd_entry_L=xd_label_L+w_label+10        
+        xd_units_L=xd_entry_L+w_entry+5
+
+        #Radio Button
+        D_Yloc=D_Yloc+D_dY
+        self.Label_Units = Label(gen_settings,text="Units")
+        self.Label_Units.place(x=xd_label_L, y=D_Yloc, width=w_label, height=28)
+        self.Radio_Units_IN = Radiobutton(gen_settings,text="inch", value="in",
+                                         width="100")
+        self.Radio_Units_IN.place(x=xd_entry_L, y=D_Yloc, width=w_units, height=28)
+        self.Radio_Units_IN.configure(variable=self.units )
+        self.Radio_Units_MM = Radiobutton(gen_settings,text="mm", value="mm",
+                                         width="100")
+        self.Radio_Units_MM.place(x=xd_entry_L+w_units+20, y=D_Yloc, width=w_units, height=28)
+        self.Radio_Units_MM.configure(variable=self.units )
+        self.units.trace_variable("w", self.Entry_units_var_Callback)
+    
+        
+        D_Yloc=D_Yloc+D_dY
+        self.Label_ArcAngle = Label(gen_settings,text="Arc Angle")
+        self.Label_ArcAngle.place(x=xd_label_L, y=D_Yloc, width=w_label, height=28)
+        self.Label_ArcAngle_u = Label(gen_settings,text="deg")
+        self.Label_ArcAngle_u.place(x=xd_units_L, y=D_Yloc, width=w_units, height=28)
+        self.Entry_ArcAngle = Entry(gen_settings,width="15")
+        self.Entry_ArcAngle.place(x=xd_entry_L, y=D_Yloc, width=w_entry, height=28)
+        self.Entry_ArcAngle.configure(textvariable=self.segarc)
+        self.segarc.trace_variable("w", self.Entry_ArcAngle_Callback)
+        self.entry_set(self.Entry_ArcAngle,self.Entry_ArcAngle_Check(),2)
+
+        D_Yloc=D_Yloc+D_dY
+        self.Label_clean = Label(gen_settings,text="Enable Arc Fitting")
+        self.Label_clean.place(x=xd_label_L-10, y=D_Yloc, width=w_label+40, height=28)
+        self.Checkbutton_clean = Checkbutton(gen_settings,text="")
+        self.Checkbutton_clean.place(x=xd_entry_L, y=D_Yloc, width=w_entry-20, height=28)
+        self.Checkbutton_clean.configure(variable=self.arc_fit)
+
+        D_Yloc=D_Yloc+D_dY
+        self.Label_Hcalc = Label(gen_settings,text="Height Calculation:")
+        self.Label_Hcalc.place(x=xd_label_L, y=D_Yloc, width=w_label+40, height=28)
+        
+        D_Yloc=D_Yloc+D_dY-10
+        self.Radio_Hcalc_ALL = Radiobutton(gen_settings,text="Max All", \
+                                            value="max_all", width="110")
+        self.Radio_Hcalc_ALL.place(x=xd_entry_L-44, y=D_Yloc, width=w_label, height=28)
+        self.Radio_Hcalc_ALL.configure(variable=self.H_CALC )
+        
+        D_Yloc=D_Yloc+D_dY-10
+        self.Radio_Hcalc_USE = Radiobutton(gen_settings,text="Max Used", \
+                                            value="max_use", width="110")
+        self.Radio_Hcalc_USE.place(x=xd_entry_L-30, y=D_Yloc, width=w_label, height=28)
+        self.Radio_Hcalc_USE.configure(variable=self.H_CALC )
+
+
+        ## Buttons ##
+ 
+        gen_settings.update_idletasks()
+        Ybut=int(gen_settings.winfo_height())-30
+        Xbut=int(gen_settings.winfo_width()/2)
+
+
+        self.GEN_Reload = Button(gen_settings,text="Recalculate")
+        self.GEN_Reload.place(x=Xbut-30, y=Ybut-40, width=200, height=100, anchor="e")
+        self.GEN_Reload.bind("<ButtonRelease-1>", self.Recalculate_Click)
+
+        self.GEN_Calibrate = Button(gen_settings,text="Calibrate Touchscreen")
+        self.GEN_Calibrate.place(x=Xbut, y=Ybut-340, width=400, height=200, anchor="c")
+        self.GEN_Calibrate.bind("<ButtonRelease-1>", self.Calibrate_Click)
+        
+        self.GEN_Close = Button(gen_settings,text="Close",command=self.Close_Current_Window_Click)
+        self.GEN_Close.place(x=Xbut+30, y=Ybut-40, width=200, height=100, anchor="w")
+
+
+
+################################################################################
+#                            TEXT Settings Window                              #
+################################################################################  
+    def TEXT_Settings_Window(self):
+        text_settings = Toplevel(width=1024, height=768)
+        text_settings.grab_set() # Use grab_set to prevent user input in the main window during calculations
+        text_settings.resizable(0,0)
+        text_settings.title('Text Settings')
+        text_settings.iconname("Text Settings")
+        text_settings.attributes('-fullscreen','1')
+       
+        T_dY = 40
+        x_label_L = 50
+        x_label_R = 500
+
+        w_label=180
+        w_entry=80
+        w_units=100
+        x_entry_L=x_label_L+w_label+10        
+        x_units_L=x_entry_L+w_entry+5
+        x_entry_R=x_label_R+w_label+10        
+        x_units_R=x_entry_R+w_entry+5
+
+        # Left Column #
+        Yloc=20
+        self.Label_font_prop = Label(text_settings,text="Text Font Properties:", anchor=W)
+        self.Label_font_prop.place(x=x_label_L, y=Yloc, width=w_label*2, height=28)
+        
+        self.Label_Yscale = Label(text_settings,text="Text Height", anchor=CENTER)
+        self.Label_Yscale_u = Label(text_settings,textvariable=self.units, anchor=W)
+        self.Entry_Yscale = Entry(text_settings,width="15")
+        self.Entry_Yscale.configure(textvariable=self.YSCALE)
+        self.Entry_Yscale.bind('<Return>', self.Recalculate_Click)
+        self.YSCALE.trace_variable("w", self.Entry_Yscale_Callback)
+        self.NormalColor =  self.Entry_Yscale.cget('bg')
+        
+        Yloc=Yloc+40
+        self.Label_Yscale.place(x=x_label_L, y=Yloc, width=w_label, height=24)
+        self.Label_Yscale_u.place(x=x_units_L, y=Yloc, width=w_units, height=24)
+        self.Entry_Yscale.place(x=x_entry_L, y=Yloc, width=w_entry, height=27)
+        
+        self.Label_Xscale = Label(text_settings,text="Text Width", anchor=CENTER )
+        self.Label_Xscale_u = Label(text_settings,text="%", anchor=W)      
+        self.Entry_Xscale = Entry(text_settings,width="15")
+        self.Entry_Xscale.configure(textvariable=self.XSCALE)
+        self.Entry_Xscale.bind('<Return>', self.Recalculate_Click)
+        self.XSCALE.trace_variable("w", self.Entry_Xscale_Callback)
+        Yloc=Yloc+40
+        self.Label_Xscale.place(x=x_label_L, y=Yloc, width=w_label, height=24)
+        self.Label_Xscale_u.place(x=x_units_L, y=Yloc, width=w_units, height=24)
+        self.Entry_Xscale.place(x=x_entry_L, y=Yloc, width=w_entry, height=27)
+
+        self.Label_Cspace = Label(text_settings,text="Char Spacing", anchor=CENTER )
+        self.Label_Cspace_u = Label(text_settings,text="%", anchor=W)
+        self.Entry_Cspace = Entry(text_settings,width="15")
+        self.Entry_Cspace.configure(textvariable=self.CSPACE)
+        self.Entry_Cspace.bind('<Return>', self.Recalculate_Click)
+        self.CSPACE.trace_variable("w", self.Entry_Cspace_Callback)
+        
+        Yloc=Yloc+40
+        self.Label_Cspace.place(x=x_label_L, y=Yloc, width=w_label, height=24)
+        self.Label_Cspace_u.place(x=x_units_L, y=Yloc, width=w_units, height=24)
+        self.Entry_Cspace.place(x=x_entry_L, y=Yloc, width=w_entry, height=27)
+
+        self.Label_Wspace = Label(text_settings,text="Word Spacing", anchor=CENTER )
+        self.Label_Wspace_u = Label(text_settings,text="%", anchor=W)
+        self.Entry_Wspace = Entry(text_settings,width="15")
+        self.Entry_Wspace.configure(textvariable=self.WSPACE)
+        self.Entry_Wspace.bind('<Return>', self.Recalculate_Click)
+        self.WSPACE.trace_variable("w", self.Entry_Wspace_Callback)
+        
+        Yloc=Yloc+40
+        self.Label_Wspace.place(x=x_label_L, y=Yloc, width=w_label, height=24)
+        self.Label_Wspace_u.place(x=x_units_L, y=Yloc, width=w_units, height=24)
+        self.Entry_Wspace.place(x=x_entry_L, y=Yloc, width=w_entry, height=27)
+
+        self.Label_Lspace = Label(text_settings,text="Line Spacing", anchor=CENTER )
+        self.Entry_Lspace = Entry(text_settings,width="15")
+        self.Entry_Lspace.configure(textvariable=self.LSPACE)
+        self.Entry_Lspace.bind('<Return>', self.Recalculate_Click)
+        self.LSPACE.trace_variable("w", self.Entry_Lspace_Callback)
+        
+        Yloc=Yloc+40
+        self.Label_Lspace.place(x=x_label_L, y=Yloc, width=w_label, height=24)
+        self.Entry_Lspace.place(x=x_entry_L, y=Yloc, width=w_entry, height=27)
+
+        Yloc=Yloc+40+12
+        self.separator1 = Frame(text_settings, height=2, bd=1, relief=SUNKEN)
+        self.separator1.place(x=x_label_L, y=Yloc,width=w_label+75+40, height=2)
+        
+        Yloc=Yloc+12
+        self.Label_pos_orient = Label(text_settings,text="Text Position and Orientation:",\
+                                    anchor=W)
+        self.Label_pos_orient.place(x=x_label_L, y=Yloc, width=w_label*2, height=24)
+
+                
+
+
+        self.Label_Tangle = Label(text_settings,text="Text Angle", anchor=CENTER )
+        self.Label_Tangle_u = Label(text_settings,text="deg", anchor=W)
+        self.Entry_Tangle = Entry(text_settings,width="15")
+        self.Entry_Tangle.configure(textvariable=self.TANGLE)
+        self.Entry_Tangle.bind('<Return>', self.Recalculate_Click)
+        self.TANGLE.trace_variable("w", self.Entry_Tangle_Callback)
+        
+        Yloc=Yloc+40
+        self.Label_Tangle.place(x=x_label_L, y=Yloc, width=w_label, height=24)
+        self.Label_Tangle_u.place(x=x_units_L, y=Yloc, width=w_units, height=24)
+        self.Entry_Tangle.place(x=x_entry_L, y=Yloc, width=w_entry, height=27)
+
+        self.Label_Justify      = Label(text_settings,text="Justify", anchor=CENTER )
+        self.Justify_OptionMenu = OptionMenu(text_settings, self.justify, "Left","Center",\
+                                                 "Right", command=self.Recalculate_RQD_Click)
+        self.Justify_OptionMenu['menu'].config(font=('calibri',(15)))
+        
+        Yloc=Yloc+40
+        self.Label_Justify.place(x=x_label_L, y=Yloc, width=w_label, height=30)
+        self.Justify_OptionMenu.place(x=x_entry_L, y=Yloc, width=w_entry+80, height=40)
+
+
+
+        self.Label_Origin      = Label(text_settings,text="Origin", anchor=CENTER )
+        self.Origin_OptionMenu = OptionMenu(text_settings, self.origin,
+                                            "Top-Left",
+                                            "Top-Center",
+                                            "Top-Right",
+                                            "Mid-Left",
+                                            "Mid-Center",
+                                            "Mid-Right",
+                                            "Bot-Left",
+                                            "Bot-Center",
+                                            "Bot-Right",
+                                            "Default", command=self.Recalculate_RQD_Click)
+        self.Origin_OptionMenu['menu'].config(font=('calibri',(15)))
+        
+        Yloc=Yloc+50
+        self.Label_Origin.place(x=x_label_L, y=Yloc, width=w_label, height=30)
+        self.Origin_OptionMenu.place(x=x_entry_L, y=Yloc, width=w_entry+80, height=40)
+
+        self.Label_flip = Label(text_settings,text="Flip Text")
+        self.Checkbutton_flip = Checkbutton(text_settings,text=" ", anchor=W) 
+        self.Checkbutton_flip.configure(variable=self.flip)
+        self.flip.trace_variable("w", self.Entry_recalc_var_Callback)
+        Yloc=Yloc+40
+        self.Label_flip.place(x=x_label_L, y=Yloc, width=w_label, height=24)
+        self.Checkbutton_flip.place(x=x_entry_L, y=Yloc, width=w_entry+40, height=30)
+
+        self.Label_mirror = Label(text_settings,text="Mirror Text")
+        self.Checkbutton_mirror = Checkbutton(text_settings,text=" ", anchor=W)
+        self.Checkbutton_mirror.configure(variable=self.mirror)
+        self.mirror.trace_variable("w", self.Entry_recalc_var_Callback)
+        Yloc=Yloc+40
+        self.Label_mirror.place(x=x_label_L, y=Yloc, width=w_label, height=24)
+        self.Checkbutton_mirror.place(x=x_entry_L, y=Yloc, width=w_entry+40, height=27)
+                
+
+
+        #Right Column
+
+        self.Label_gcode_opt = Label(text_settings,text="Gcode Properties:", anchor=W)
+        Yloc=20
+        self.Label_gcode_opt.place(x=x_label_R, y=Yloc, width=w_label*2, height=24)
+
+        self.Label_Feed = Label(text_settings,text="Feed Rate")
+        self.Label_Feed_u = Label(text_settings,textvariable=self.funits, anchor=W)
+        self.Entry_Feed = Entry(text_settings,width="25")
+        self.Entry_Feed.configure(textvariable=self.FEED)
+        self.Entry_Feed.bind('<Return>', self.Recalculate_Click)
+        self.FEED.trace_variable("w", self.Entry_Feed_Callback)
+        Yloc=Yloc+40
+        self.Entry_Feed.place(  x=x_entry_R, y=Yloc, width=w_entry, height=27)
+        self.Label_Feed.place(  x=x_label_R, y=Yloc, width=w_label, height=24)
+        self.Label_Feed_u.place(x=x_units_R, y=Yloc, width=w_units+15, height=24)
+
+        self.Label_Drate = Label(text_settings,text="Dot Rate")
+        self.Label_Drate_u = Label(text_settings,text="ms", anchor=W)
+        self.Entry_Drate = Entry(text_settings,width="25")
+        self.Entry_Drate.configure(textvariable=self.DRATE)
+        self.Entry_Drate.bind('<Return>', self.Recalculate_Click)
+        self.DRATE.trace_variable("w", self.Entry_Drate_Callback)
+        Yloc=Yloc+40
+        self.Entry_Drate.place(  x=x_entry_R, y=Yloc, width=w_entry, height=27)
+        self.Label_Drate.place(  x=x_label_R, y=Yloc, width=w_label, height=24)
+        self.Label_Drate_u.place(x=x_units_R, y=Yloc, width=w_units, height=24)
+        
+        Yloc=Yloc+40+12
+        self.separator2 = Frame(text_settings, height=2, bd=1, relief=SUNKEN)
+        self.separator2.place(x=x_label_R, y=Yloc,width=w_label+75+40, height=2)
+
+        self.Label_text_on_arc = Label(text_settings,text="Text on Circle Properties:",\
+                                           anchor=W)
+        Yloc=Yloc+12
+        self.Label_text_on_arc.place(x=x_label_R, y=Yloc, width=w_label*2, height=24)
+
+        self.Label_Tradius = Label(text_settings,text="Circle Radius", anchor=CENTER )
+        self.Label_Tradius_u = Label(text_settings,textvariable=self.units, anchor=W)
+        self.Entry_Tradius = Entry(text_settings,width="15")
+        self.Entry_Tradius.configure(textvariable=self.TRADIUS)
+        self.Entry_Tradius.bind('<Return>', self.Recalculate_Click)
+        self.TRADIUS.trace_variable("w", self.Entry_Tradius_Callback)
+        Yloc=Yloc+40
+        self.Label_Tradius.place(x=x_label_R, y=Yloc, width=w_label, height=24)
+        self.Label_Tradius_u.place(x=x_units_R, y=Yloc, width=w_units, height=24)
+        self.Entry_Tradius.place(x=x_entry_R, y=Yloc, width=w_entry, height=27)
+
+        self.Label_outer = Label(text_settings,text="Outside circle")
+        self.Checkbutton_outer = Checkbutton(text_settings,text=" ", anchor=W)   
+        self.Checkbutton_outer.configure(variable=self.outer)
+        self.outer.trace_variable("w", self.Entry_recalc_var_Callback)
+        Yloc=Yloc+40
+        self.Label_outer.place(x=x_label_R, y=Yloc, width=w_label, height=24)
+        self.Checkbutton_outer.place(x=x_entry_R, y=Yloc, width=w_entry+40, height=27) 
+
+        self.Label_upper = Label(text_settings,text="Top of Circle")
+        self.Checkbutton_upper = Checkbutton(text_settings,text=" ", anchor=W)   
+        self.Checkbutton_upper.configure(variable=self.upper)
+        self.upper.trace_variable("w", self.Entry_recalc_var_Callback)
+        Yloc=Yloc+40
+        self.Label_upper.place(x=x_label_R, y=Yloc, width=w_label, height=24)
+        self.Checkbutton_upper.place(x=x_entry_R, y=Yloc, width=w_entry+40, height=27)
+
+        self.Label_serialn = Label(text_settings,text="Serial Number")
+        self.Checkbutton_serialn = Checkbutton(text_settings,text=" ", anchor=W)   
+        self.Checkbutton_serialn.configure(variable=self.serialn)
+        self.serialn.trace_variable("w", self.Entry_recalc_var_Callback)
+        Yloc=Yloc+40
+        self.Label_serialn.place(x=x_label_R, y=Yloc, width=w_label, height=24)
+        self.Checkbutton_serialn.place(x=x_entry_R, y=Yloc, width=w_entry+40, height=27)
+        Yloc=Yloc+30
+        self.Label_SerialHelp = Label(text_settings,text="Use ""!"" in text for serial number.",\
+                                           anchor=W)
+        self.Label_SerialHelp.config(font=('calibri',(13)))
+        self.Label_SerialHelp.place(x=x_label_R+50, y=Yloc, width=w_label+200, height=24)
+
+        self.Label_List_Box = Label(text_settings,text="Font Files:", foreground="#101010",\
+                                        anchor=W)
+        lbframe = Frame( text_settings )
+        self.Listbox_1_frame = lbframe
+        scrollbar = Scrollbar(lbframe, orient=VERTICAL)
+        self.Listbox_1 = Listbox(lbframe, selectmode="single", yscrollcommand=scrollbar.set)
+        scrollbar.config(command=self.Listbox_1.yview)
+        scrollbar.pack(side=RIGHT, fill=Y)
+        self.Listbox_1.pack(side=LEFT, fill=BOTH, expand=1)
+       
+        self.Listbox_1.bind("<ButtonRelease-1>", self.Listbox_1_Click)
+        self.Listbox_1.bind("<Up>",   self.Listbox_Key_Up)
+        self.Listbox_1.bind("<Down>", self.Listbox_Key_Down)
+        
+        try:
+            font_files=os.listdir(self.fontdir.get())
+            font_files.sort()
+        except:
+            font_files=" "
+        for name in font_files:
+            if str.find(name.upper(),'.CXF') != -1 :
+                self.Listbox_1.insert(END, name)
+        if len(self.fontfile.get()) < 4:
+            try:
+                self.fontfile.set(self.Listbox_1.get(0))
+            except:
+                self.fontfile.set(" ")
+                
+        #self.fontdir.trace_variable("w", self.Entry_fontdir_Callback)
+        
+        Yloc=Yloc+50+6
+        self.Label_List_Box.place(x=x_label_R+15, y=Yloc, width=200, height=22)
+                
+        Yloc=Yloc+40
+        self.Listbox_1_frame.place(x=x_label_R+15, y=Yloc, width=260+25, height = 150)
+        
+        ## Buttons ##
+ 
+        text_settings.update_idletasks()
+        Ybut=int(text_settings.winfo_height())-30
+        Xbut=int(text_settings.winfo_width()/2)
+
+        self.TEXT_Reload = Button(text_settings,text="Recalculate")
+        self.TEXT_Reload.place(x=Xbut-30, y=Ybut-40, width=300, height=100, anchor="e")
+        self.TEXT_Reload.bind("<ButtonRelease-1>", self.Recalculate_Click)
+        
+        self.TEXT_Close = Button(text_settings,text="Close",command=self.Close_Current_Window_Click)
+        self.TEXT_Close.place(x=Xbut+30, y=Ybut-40, width=300, height=100, anchor="w")
+
+
+############################################################################
+# routine takes an x and a y coords and does a cordinate transformation    #
+# to a new coordinate system at angle from the initial coordinate system   #
+# Returns new x,y tuple                                                    #
+############################################################################
+def Transform(x,y,angle):
+    newx = x * cos(angle) - y * sin(angle)
+    newy = x * sin(angle) + y * cos(angle)
+    return newx,newy
+
+############################################################################
+# routine takes an sin and cos and returnss the angle (between 0 and 360)  #
+############################################################################
+def Get_Angle(s,c):
+    if   (s >= 0.0 and c >= 0.0):
+        angle = degrees( acos(c) )
+    elif (s >= 0.0 and c < 0.0):
+        angle = degrees( acos(c) )
+    elif (s < 0.0 and c <= 0.0):
+        angle = 360-degrees( acos(c) )
+    elif (s < 0.0 and c > 0.0):
+        angle = 360-degrees( acos(c) )
+    else:
+        pass
+    if angle < 0.001 and s < 0:
+        angle == 360.0
+    if angle > 359.999 and s >= 0:
+        angle == 0.0            
+    return angle
+
+################################################################################
+# This routine parses the .cxf font file and builds a font dictionary of       #
+# line segment strokes required to cut each character.                         #
+# Arcs (only used in some fonts) are converted to a number of line             #
+# segments based on the angular length of the arc. Since the idea of           #
+# this font description is to make it support independent x and y scaling,     #
+# we do not use native arcs in the g-code.                                      #
+################################################################################
+def parse(file,segarc):
+    font = {}
+    key = None
+    stroke_list = []
+    xmax, ymax = 0, 0
+    for text_in in file:
+        text = text_in+" "
+        # format for a typical letter (lowercase r):
+        # #comment, with a blank line after it
+        #
+        # [r] 3  (or "[0072] r" where 0072 is the HEX value of the character) 
+        # L 0,0,0,6
+        # L 0,6,2,6
+        # A 2,5,1,0,90
+        #
+        end_char = len(text)
+        if end_char and key: #save the character to our dictionary
+            font[key] = Character(key)
+            font[key].stroke_list = stroke_list
+            font[key].xmax = xmax
+
+        new_cmd = re.match('^\[(.*)\]\s', text)
+        if new_cmd: #new character
+            key_tmp = new_cmd.group(1)
+            if len(new_cmd.group(1)) == 1:
+                #key = key_tmp
+                key = ord(key_tmp)
+            else:
+                if len(key_tmp) == 5:
+                    key_tmp = key_tmp[1:]
+                if len(key_tmp) == 4:
+                    try:
+                        #key=chr(int(key_tmp,16))
+                        key=int(key_tmp,16)
+                    except:
+                        key = None
+                        stroke_list = []
+                        xmax, ymax = 0, 0
+                        continue
+                else:
+                    key = None
+                    stroke_list = []
+                    xmax, ymax = 0, 0
+                    continue
+            stroke_list = []
+            xmax, ymax = 0, 0
+            
+        line_cmd = re.match('^L (.*)', text)
+        if line_cmd:
+            coords = line_cmd.group(1)
+            coords = [float(n) for n in coords.split(',')]
+            stroke_list += [Line(coords)]
+            xmax = max(xmax, coords[0], coords[2])
+
+        arc_cmd = re.match('^A (.*)', text)
+        if arc_cmd:
+            coords = arc_cmd.group(1)
+            coords = [float(n) for n in coords.split(',')]
+            xcenter, ycenter, radius, start_angle, end_angle = coords
+
+            # since font defn has arcs as ccw, we need some font foo
+            if ( end_angle < start_angle ):
+                start_angle -= 360.0
+
+            # approximate arc with line seg every "segarc" degrees
+            segs = int((end_angle - start_angle) / segarc)+1
+            angleincr = (end_angle - start_angle)/segs
+            xstart = cos( radians(start_angle) ) * radius + xcenter
+            ystart = sin( radians(start_angle) ) * radius + ycenter
+            angle = start_angle
+            for i in range(segs):
+                angle += angleincr
+                xend = cos( radians(angle) ) * radius + xcenter
+                yend = sin( radians(angle) ) * radius + ycenter
+                coords = [xstart,ystart,xend,yend]
+                stroke_list += [Line(coords)]
+                xmax = max(xmax, coords[0], coords[2])
+                ymax = max(ymax, coords[1], coords[3])
+                xstart = xend
+                ystart = yend
+    return font
+
+################################################################################
+def parse_dxf(dxf_file,segarc):
+    # Initialize / reset
+    font = {}
+    key = None
+    stroke_list = []
+    xmax, ymax = 0, 0
+    DXF_source = " "
+    dxf_import=DXF_CLASS()
+    dxf_import.GET_DXF_DATA(dxf_file,tol_deg=segarc)
+    dxfcoords=dxf_import.DXF_COORDS_GET()
+    
+    if "POTRACE" in dxf_import.comment.upper():
+        DXF_source="POTRACE"
+    if "INKSCAPE" in dxf_import.comment.upper():
+        DXF_source="INKSCAPE"
+
+    ##save the character to our dictionary
+    key = ord("F")
+    stroke_list=[]
+    for line in dxfcoords:
+        XY=line
+        stroke_list += [ Line([ XY[0],XY[1],XY[2],XY[3] ]) ]
+        xmax=max(xmax,XY[0],XY[2])
+        ymax=max(ymax,XY[1],XY[3])
+        
+    font[key] = Character(key)
+    font[key].stroke_list = stroke_list
+    font[key].xmax = xmax
+
+    return font,DXF_source
+################################################################################
+
+class Character:
+    def __init__(self, key):
+        self.key = key
+        self.stroke_list = []
+
+    def __repr__(self):
+        return "%s" % (self.stroke_list)
+
+    def get_xmax(self):
+        try: return max([s.xmax for s in self.stroke_list[:]])
+        except ValueError: return 0
+
+    def get_ymax(self):
+        try: return max([s.ymax for s in self.stroke_list[:]])
+        except ValueError: return 0
+
+    def get_ymin(self):
+        try: return min([s.ymin for s in self.stroke_list[:]])
+        except ValueError: return 0
+
+################################################################################
+class Line:
+
+    def __init__(self, coords):
+        self.xstart, self.ystart, self.xend, self.yend = coords
+        self.xmax = max(self.xstart, self.xend)
+        self.ymax = max(self.ystart, self.yend)
+        self.ymin = min(self.ystart, self.yend)
+
+    def __repr__(self):
+        return "Line([%s, %s, %s, %s])" % (self.xstart, self.ystart, self.xend, self.yend)
+################################################################################
+####################################################
+##     PointClass from dxf2gcode_b02_point.py     ##
+####################################################
+class PointClass:
+    def __init__(self,x=0,y=0):
+        self.x=x
+        self.y=y
+    def __str__(self):
+        return ('X ->%6.3f  Y ->%6.3f' %(self.x,self.y))
+
+####################################################
+##  Begin Excerpts from dxf2gcode_b02_nurbs_calc  ##
+####################################################
+class NURBSClass:
+    def __init__(self,degree=0,Knots=[],Weights=None,CPoints=None):
+        self.degree=degree              #Spline degree
+        self.Knots=Knots                #Knot Vector
+        self.CPoints=CPoints            #Control points of splines [2D]
+        self.Weights=Weights            #Weighting of the individual points
+
+        #Initializing calculated variables
+        self.HCPts=[]                   #Homogeneous points vectors [3D]          
+
+        #Convert Points in Homogeneous points
+        self.CPts_2_HCPts()
+
+        #Creating the BSplineKlasse to calculate the homogeneous points
+        self.BSpline=BSplineClass(degree=self.degree,\
+                                  Knots=self.Knots,\
+                                  CPts=self.HCPts)
+                                               
+    #Calculate a number of evenly distributed points
+    def calc_curve_old(self,n=0, cpts_nr=20):
+        #Initial values for step and u
+        u=0; Points=[]
+        step=self.Knots[-1]/(cpts_nr-1)        
+        while u<=self.Knots[-1]:
+            Pt=self.NURBS_evaluate(n=n,u=u)
+            Points.append(Pt)
+            u+=step        
+        return Points
+
+
+    #Calculate a number points using error limiting
+    def calc_curve(self,n=0, tol_deg=20):
+        #Initial values for step and u
+        u=0; Points=[]
+
+        tol = radians(tol_deg)
+        i=1
+        while self.Knots[i]==0:
+            i=i+1
+        step=self.Knots[i]/3
+
+        Pt1=self.NURBS_evaluate(n=n,u=0.0)
+        Points.append(Pt1)
+        while u<self.Knots[-1]:
+            if (u+step > self.Knots[-1]):
+                step = self.Knots[-1]-u
+            
+            Pt2=self.NURBS_evaluate(n=n,u=u+step)
+            Pt_test=self.NURBS_evaluate(n=n,u=u + step/2)
+
+            dx1 = (Pt_test.x - Pt1.x)
+            dy1 = (Pt_test.y - Pt1.y)
+            L1 = sqrt(dx1*dx1 + dy1*dy1)
+
+            dx2 = (Pt2.x - Pt_test.x)
+            dy2 = (Pt2.y - Pt_test.y)
+            L2 = sqrt(dx2*dx2 + dy2*dy2)
+
+            if L1 > Zero and L2 > Zero:
+                cos_angle = dx1/L1 * dx2/L2 + dy1/L1 * dy2/L2
+                if  abs(cos_angle) > 1:
+                    cos_angle = int(cos_angle)
+                angle=acos(cos_angle)
+            else:
+                angle=0.0
+
+            if angle > tol:
+                step = step/2
+            else:
+                u+=step
+                Points.append(Pt2)
+                step = step*2
+                Pt1=Pt2          
+        return Points
+
+    
+    #Calculate a point of NURBS
+    def NURBS_evaluate(self,n=0,u=0):
+
+        #Calculate the homogeneous points to the n th derivative       
+        HPt=self.BSpline.bspline_ders_evaluate(n=n,u=u)
+
+        #Point back to normal coordinates transform        
+        Point=self.HPt_2_Pt(HPt[0])
+        return Point
+
+    #Convert the NURBS control points and weight in a homogeneous vector
+    def CPts_2_HCPts(self):
+        for P_nr in range(len(self.CPoints)):
+            HCPtVec=[self.CPoints[P_nr].x*self.Weights[P_nr],\
+                       self.CPoints[P_nr].y*self.Weights[P_nr],\
+                       self.Weights[P_nr]]
+            self.HCPts.append(HCPtVec[:])
+
+    #Convert a homogeneous vector point in a point
+    def HPt_2_Pt(self,HPt):
+        return PointClass(x=HPt[0]/HPt[-1],y=HPt[1]/HPt[-1])
+
+class BSplineClass:
+    def __init__(self,degree=0,Knots=[],CPts=[]):
+        self.degree=degree
+        self.Knots=Knots
+        self.CPts=CPts
+
+        self.Knots_len=len(self.Knots)        
+        self.CPt_len=len(self.CPts[0])
+        self.CPts_len=len(self.CPts)
+
+        # Incoming inspection, fit the upper node number, etc.     
+        if  self.Knots_len< self.degree+1:
+            fmessage("SPLINE: degree greater than number of control points.")
+        if self.Knots_len != (self.CPts_len + self.degree+1):
+            fmessage("SPLINE: Knot/Control Point/degree number error.")       
+
+    #Modified Version of Algorithm A3.2 from "THE NURBS BOOK" pg.93
+    def bspline_ders_evaluate(self,n=0,u=0):
+        #Calculating the position of the node vector      
+        span=self.findspan(u)
+
+        #Compute the basis function up to the n th derivative at the point u      
+        dN=self.ders_basis_functions(span,u,n)
+
+        p=self.degree
+        du=min(n,p) 
+
+        CK=[]
+        dPts=[]
+        for i in range(self.CPt_len):
+            dPts.append(0.0)
+        for k in range(n+1):
+            CK.append(dPts[:])
+
+        for k in range(du+1):
+            for j in range(p+1):
+                for i in range(self.CPt_len):
+                    CK[k][i]+=dN[k][j]*self.CPts[span-p+j][i]
+        return CK
+
+    #Algorithm A2.1 from "THE NURBS BOOK" pg.68
+    def findspan(self,u):
+        #Special case when the value is == Endpoint
+        if(u==self.Knots[-1]):
+            return self.Knots_len-self.degree-2
+        
+        # Binary search
+        # (The interval from high to low is always halved by
+        # [mid: mi +1] value lies between the interval of Knots)
+        low=self.degree
+        high=self.Knots_len
+        mid=int((low+high)/2)
+        while ((u<self.Knots[mid])or(u>=self.Knots[mid+1])):
+            if (u<self.Knots[mid]):
+                high=mid
+            else:
+                low=mid
+            mid=int((low+high)/2)
+        return mid
+
+    #Algorithm A2.3 from "THE NURBS BOOK" pg.72
+    def ders_basis_functions(self,span,u,n):
+        d=self.degree
+        
+        #Initialize the a matrix
+        a=[]
+        zeile=[]
+        for j in range(d+1):
+            zeile.append(0.0)
+        a.append(zeile[:]); a.append(zeile[:])
+        
+        #Initialize the ndu matrix
+        ndu=[]
+        zeile=[]
+        for i in range(d+1):
+            zeile.append(0.0)
+        for j in range(d+1):
+            ndu.append(zeile[:])
+
+        #Initialize the ders matrix
+        ders=[]
+        zeile=[]
+        for i in range(d+1):
+            zeile.append(0.0)    
+        for j in range(n+1):
+            ders.append(zeile[:])
+            
+        ndu[0][0]=1.0
+        left=[0]
+        right=[0]
+
+        for j in range(1,d+1):
+            left.append(u-self.Knots[span+1-j])
+            right.append(self.Knots[span+j]-u)
+            saved=0.0
+            for r in range(j):
+                #Lower Triangle
+                ndu[j][r]=right[r+1]+left[j-r]
+                temp=ndu[r][j-1]/ndu[j][r]
+                #Upper Triangle
+                ndu[r][j]=saved+right[r+1]*temp
+                saved=left[j-r]*temp
+            ndu[j][j]=saved
+            
+        #Load the basis functions
+        for j in range(d+1):
+            ders[0][j]=ndu[j][d]
+
+        #This section computes the derivatives (Eq. [2.9])
+        for r in range(d+1): #Loop over function index
+            s1=0; s2=1  #Alternate rows in array a
+            a[0][0]=1.0
+            for k in range(1,n+1):
+                der=0.0
+                rk=r-k; pk=d-k
+                if(r>=k):
+                    a[s2][0]=a[s1][0]/ndu[pk+1][rk]
+                    der=a[s2][0]*ndu[rk][pk]
+                if (rk>=-1):
+                    j1=1
+                else:
+                    j1=-rk
+                if (r-1<=pk):
+                    j2=k-1
+                else:
+                    j2=d-r
+
+                #Here he is not in the first derivative of pure
+                for j in range(j1,j2+1):
+                    a[s2][j]=(a[s1][j]-a[s1][j-1])/ndu[pk+1][rk+j]
+                    der+=a[s2][j]*ndu[rk+j][pk]
+            
+                if(r<=pk):
+                    a[s2][k]=-a[s1][k-1]/ndu[pk+1][r]               
+                    der+=a[s2][k]*ndu[r][pk]                        
+
+                ders[k][r]=der
+                j=s1; s1=s2; s2=j #Switch rows
+                
+        #Multiply through by the the correct factors   
+        r=d
+        for k in range(1,n+1):
+            for j in range(d+1):
+                ders[k][j] *=r
+            r*=(d-k)     
+        return ders
+
+####################################################
+##  End Excerpts from dxf2gcode_b02_nurbs_calc.py ##
+####################################################
+
+class Header:
+    def __init__(self):
+        self.variables = dict()
+        self.last_var = None
+    def new_var(self, kw):
+        self.variables.update({kw: dict()})
+        self.last_var = self.variables[kw]
+    def new_val(self, val):
+        self.last_var.update({ str(val[0]) : val[1] })
+
+class Entity:
+    def __init__(self, _type):
+        self.type = _type
+        self.data = dict()
+    def update(self, value):
+        key = str(value[0])
+        val = value[1]
+        if key in self.data:
+            if type(self.data[key]) != list:
+                self.data[key] = [self.data[key]]
+            self.data[key].append(val)
+        else:
+            self.data.update({key:val})
+        
+class Entities:
+    def __init__(self):
+        self.entities = []
+        self.last = None
+    def new_entity(self, _type):
+        e = Entity(_type)
+        self.entities.append(e)
+        self.last = e
+    def update(self, value):
+        self.last.update(value)
+
+class Block:
+    def __init__(self, master):
+        self.master = master
+        self.data = dict()
+        self.entities = []
+        self.le = None
+    def new_entity(self, value):
+        self.le = Entity(value)
+        self.entities.append(self.le)
+    def update(self, value):
+        if self.le == None:
+            val = str(value[0])
+            self.data.update({val:value[1]})
+            if val == "2":
+                self.master.blocks[value[1]] = self
+        else:
+            self.le.update(value)
+
+class Blocks:
+    def __init__(self):
+        self.blocks = dict()
+        self.last_var = None
+    def new_block(self):
+        b = Block(self)
+        self.last_block = b
+        self.last_var = b
+    def new_entity(self, value):
+        self.last_block.new_entity(value)
+    def update(self, value):
+        self.last_block.update(value)
+
+class DXF_CLASS:
+    def __init__(self):
+        self.coords = []
+        strings = []
+        floats = []
+        ints = []
+
+        strings += list(range(0, 10))     #String (255 characters maximum; less for Unicode strings)
+        floats += list(range(10, 60))     #Double precision 3D point
+        ints += list(range(60, 80))       #16-bit integer value
+        ints += list(range(90,100))       #32-bit integer value
+        strings += [100]            #String (255 characters maximum; less for Unicode strings)
+        strings += [102]            #String (255 characters maximum; less for Unicode strings
+        strings += [105]            #String representing hexadecimal (hex) handle value
+        floats += list(range(140, 148))   #Double precision scalar floating-point value
+        ints += list(range(170, 176))     #16-bit integer value
+        ints += list(range(280, 290))     #8-bit integer value
+        strings += list(range(300, 310))  #Arbitrary text string
+        strings += list(range(310, 320))  #String representing hex value of binary chunk
+        strings += list(range(320, 330))  #String representing hex handle value
+        strings += list(range(330, 369))  #String representing hex object IDs
+        strings += [999]            #Comment (string)
+        strings += list(range(1000, 1010))#String (255 characters maximum; less for Unicode strings)
+        floats += list(range(1010, 1060)) #Floating-point value
+        ints += list(range(1060, 1071))   #16-bit integer value
+        ints += [1071]              #32-bit integer value
+        
+        self.funs = []
+        for i in range(0,1072):
+            self.funs.append(self.read_none)
+
+        for i in strings:
+            self.funs[i] = self.read_string
+
+        for i in floats:
+            self.funs[i] = self.read_float
+
+        for i in ints:
+            self.funs[i] = self.read_int
+
+    def read_int(self,data):
+        return int(float(data))
+    
+    def read_float(self,data):
+        return float(data)
+
+    def read_string(self,data):
+        return str(data)
+
+    def read_none(self,data):
+        return None
+
+    def read_dxf_data(self, fd, data):
+        self.comment="None"
+        Skip = True
+        fd_iter = iter(fd)
+        for line in fd_iter:
+            try:
+                group_code = int(line)
+                value = next(fd_iter).replace('\r', '')
+                #value = fd_iter.next().replace('\r', '')
+
+                value = value.replace('\n', '')
+                value = value.lstrip(' ')
+                value = value.rstrip(' ')
+                value = self.funs[group_code](value)
+                if (value != "SECTION") and Skip:
+                    if group_code==999:
+                        self.comment=value
+                    continue
+                else:
+                    Skip = False
+                data.append((group_code, value))
+            except:
+                pass
+
+    def bulge_coords(self,x0,y0,x1,y1,bulge,tol_deg=20):
+        bcoords=[]
+        if bulge < 0.0:
+            sign = 1
+            bulge=abs(bulge)
+        else:
+            sign = -1
+            
+        dx      = x1-x0
+        dy      = y1-y0
+        c       = sqrt(dx**2 + dy**2)
+        alpha   = 2.0 * (atan(bulge))
+        R       = c / (2*sin(alpha))
+        L       = R * cos(alpha)
+        steps   = ceil(2*alpha / radians(tol_deg))
+
+        seg_sin =  dy/c
+        seg_cos =  dx/c
+        phi = Get_Angle(seg_sin,seg_cos)
+
+        d_theta = 2*alpha / steps
+        theta = alpha - d_theta
+
+        xa = x0
+        ya = y0
+        for i in range(1,int(steps)):
+            xp = c/2 - R*sin(theta)
+            yp = R*cos(theta) - L
+            xb,yb = Transform(xp,yp*sign,radians(phi))
+            xb=xb+x0
+            yb=yb+y0
+
+            bcoords.append([xa,ya,xb,yb])
+            xa = xb
+            ya = yb
+            theta = theta -d_theta
+        bcoords.append([xa,ya,x1,y1])
+        return bcoords
+
+
+    def GET_DXF_DATA(self,fd, tol_deg=20):
+        data = []
+        try:
+            self.read_dxf_data(fd, data)
+        except:
+            fmessage("\nUnable to read input DXF data!")
+            return 1
+        data = iter(data)
+        g_code, value = None, None
+        sections = dict()
+
+        he = Header()
+        bl = Blocks()
+        while value != "EOF":
+            g_code, value = next(data)
+            if value == "SECTION":
+                g_code, value = next(data)
+                sections[value] = []
+
+                while value != "ENDSEC":
+                    if value == "HEADER":
+                        while True:
+                            g_code, value = next(data)
+                            if value == "ENDSEC":
+                                break
+                            elif g_code == 9:
+                                he.new_var(value)
+                            else:
+                                he.new_val((g_code, value))
+
+                    elif value == "BLOCKS":
+                        while True:
+                            g_code, value = next(data)
+                            if value == "ENDSEC":
+                                break
+                            elif value == "ENDBLK":
+                                continue
+                            elif value == "BLOCK":
+                                bl.new_block()
+                            elif g_code == 0 and value != "BLOCK":
+                                bl.new_entity(value)
+                            else:
+                                bl.update((g_code, value))
+
+                    elif value == "ENTITIES":
+                        en = Entities()
+                        while True:
+                            g_code, value = next(data)
+                            if value == "ENDSEC":
+                                break
+                            elif g_code == 0 and value != "ENDSEC":
+                                en.new_entity(value)
+                            else:
+                                en.update((g_code, value))
+                    try:
+                        g_code, value = next(data)
+                    except:
+                        break
+
+        for e in en.entities:
+            ############# LINE ############
+            if e.type == "LINE":
+                x0 = e.data["10"]
+                y0 = e.data["20"]
+                x1 = e.data["11"]
+                y1 = e.data["21"]
+                #self.
+                self.coords.append([x0,y0,x1,y1])
+            ############# ARC #############
+            elif e.type == "ARC":
+                x     = e.data["10"]
+                y     = e.data["20"]
+                r     = e.data["40"]
+                start = e.data["50"]
+                end   = e.data["51"]   
+
+                if end < start:
+                    end=end+360.0
+                delta  = end-start
+                angle_steps = max(floor(delta/tol_deg),2)
+
+                start_r = radians(start)
+                end_r   = radians(end)
+
+                step_phi = radians( delta/angle_steps )
+                x0 = x + r * cos(start_r)
+                y0 = y + r * sin(start_r)
+                pcnt = 1
+                while pcnt < angle_steps+1:
+                    phi = start_r + pcnt*step_phi
+                    x1 = x + r * cos(phi)
+                    y1 = y + r * sin(phi)
+                    self.coords.append([x0,y0,x1,y1])
+                    x0=x1
+                    y0=y1
+                    pcnt += 1
+                    
+            ######### LWPOLYLINE ##########
+            elif e.type == "LWPOLYLINE":
+                flag=0
+                lpcnt=-1
+                for x,y in zip(e.data["10"], e.data["20"]):
+                    x1 = x
+                    y1 = y
+                    lpcnt=lpcnt+1
+                    try:
+                        bulge = e.data["42"][lpcnt]   
+                    except:
+                        bulge = 0
+                    if flag==0:
+                        x0=x1
+                        y0=y1
+                        flag=1
+                    else:
+                        if bulge != 0:
+                            bcoords = self.bulge_coords(x0,y0,x1,y1,bulge,tol_deg)
+                            for line in bcoords:
+                                self.coords.append(line)
+                        else:
+                            self.coords.append([x0,y0,x1,y1])
+                        x0=x1
+                        y0=y1
+                if (e.data["70"]!=0):
+                    x1 = e.data["10"][0]
+                    y1 = e.data["20"][0]
+                    if bulge != 0:
+                        bcoords = self.bulge_coords(x0,y0,x1,y1,bulge,tol_deg)
+                        for line in bcoords:
+                            self.coords.append(line)
+                    else:
+                        self.coords.append([x0,y0,x1,y1])
+            ########### CIRCLE ############
+            elif e.type == "CIRCLE":
+                x = e.data["10"]
+                y = e.data["20"]           
+                r = e.data["40"]
+
+                start = 0
+                end   = 360
+                if end < start:
+                    end=end+360.0
+                delta  = end-start
+                angle_steps = max(floor(delta)/tol_deg,2)
+
+                start_r = radians( start )
+                end_r   = radians( end )
+
+                step_phi = radians( delta/angle_steps)
+                x0 = x + r * cos(start_r)
+                y0 = y + r * sin(start_r)
+                pcnt = 1
+                while pcnt < angle_steps+1:
+                    phi = start_r + pcnt*step_phi
+                    x1 = x + r * cos(phi)
+                    y1 = y + r * sin(phi)
+                    self.coords.append([x0,y0,x1,y1])
+                    x0=x1
+                    y0=y1
+                    pcnt += 1
+            
+            ############ SPLINE ###########
+            elif e.type == "SPLINE":
+                self.Spline_flag=[]
+                self.degree=1
+                self.Knots=[]
+                self.Weights=[]
+                self.CPoints=[]
+
+                self.Spline_flag = int(e.data["70"])
+                self.degree      = int(e.data["71"])
+                self.Knots       =     e.data["40"]
+                try:
+                    self.Weights = e.data["41"]
+                except:
+                    for K in self.Knots:
+                        self.Weights.append(1) 
+                    pass
+
+                for x,y in zip(e.data["10"], e.data["20"]):
+                    self.CPoints.append(PointClass(float(x), float(y)))
+
+                self.MYNURBS=NURBSClass(degree=self.degree, \
+                                         Knots=self.Knots,  \
+                                       Weights=self.Weights,\
+                                       CPoints=self.CPoints)
+
+                mypoints=self.MYNURBS.calc_curve(n=0, tol_deg=tol_deg)
+                flag = 0
+                for XY in mypoints:
+                    x1 = XY.x
+                    y1 = XY.y
+                    if flag==0:
+                        x0=x1
+                        y0=y1
+                        flag=1
+                    else:
+                        self.coords.append([x0,y0,x1,y1])
+                        x0=x1
+                        y0=y1
+
+            ########### ELLIPSE ###########
+            elif e.type == "ELLIPSE":
+                #X and Y center points
+                xcp = e.data["10"]
+                ycp = e.data["20"]
+                  
+                #X and Y of major axis end point
+                xma = e.data["11"]
+                yma = e.data["21"]
+
+                #Ratio of minor axis to major axis
+                ratio = e.data["40"]
+
+                #Start and end angles (in radians 0 and 2pi for full ellipse)
+                start = degrees( e.data["41"] )
+                end   = degrees( e.data["42"] )
+               
+                rotation = atan2(yma, xma)
+                a = sqrt(xma**2 + yma**2)
+                b = a * ratio
+
+                ##################
+                if end < start:
+                    end=end+360.0
+                delta  = end-start
+
+
+                start_r = radians( start )
+                end_r   = radians( end )
+                
+                tol = radians( tol_deg )
+
+                phi = start_r
+                x1 = xcp + ( a*cos(phi) * cos(rotation) - b*sin(phi) * sin(rotation) );
+                y1 = ycp + ( a*cos(phi) * sin(rotation) + b*sin(phi) * cos(rotation) );
+                step=tol
+                while phi < end_r:
+                    if (phi+step > end_r):
+                        step_phi = end_r-phi
+
+                    x2 = xcp + ( a*cos(phi+step) * cos(rotation) - b*sin(phi+step) * sin(rotation) );
+                    y2 = ycp + ( a*cos(phi+step) * sin(rotation) + b*sin(phi+step) * cos(rotation) );
+
+                    x_test = xcp + ( a*cos(phi+step/2) * cos(rotation) - b*sin(phi+step/2) * sin(rotation) );
+                    y_test = ycp + ( a*cos(phi+step/2) * sin(rotation) + b*sin(phi+step/2) * cos(rotation) );
+
+                    dx1 = (x_test - x1)
+                    dy1 = (y_test - y1)
+                    L1 = sqrt(dx1*dx1 + dy1*dy1)
+
+                    dx2 = (x2 - x_test)
+                    dy2 = (y2 - y_test)
+                    L2 = sqrt(dx2*dx2 + dy2*dy2)
+
+                    angle=acos( dx1/L1 * dx2/L2 + dy1/L1 * dy2/L2)
+
+                    if angle > tol:
+                        step = step/2
+                    else:
+                        phi+=step
+                        self.coords.append([x1,y1,x2,y2])
+                        step = step*2
+                        x1=x2
+                        y1=y2
+            ########### ELLIPSE ###########
+            elif e.type == "OLD_ELLIPSE":
+                #X and Y center points
+                xcp = e.data["10"]
+                ycp = e.data["20"]
+                #X and Y of major axis end point
+                xma = e.data["11"]
+                yma = e.data["21"]
+                #Ratio of minor axis to major axis
+                ratio = e.data["40"]
+                #Start and end angles (in radians 0 and 2pi for full ellipse)
+                start = degrees( e.data["41"] )
+                end   = degrees( e.data["42"] )
+                
+                rotation = atan2(yma, xma)
+                a = sqrt(xma**2 + yma**2)
+                b = a * ratio
+
+                ##################
+                if end < start:
+                    end=end+360.0
+                delta  = end-start
+                angle_steps = max(floor(delta/tol_deg),2)
+
+                start_r = radians( start )
+                end_r   = radians( end )
+
+                step_phi = radians( delta/angle_steps )
+                x0 = xcp + ( a*cos(start_r) * cos(rotation) - b*sin(start_r) * sin(rotation) );
+                y0 = ycp + ( a*cos(start_r) * sin(rotation) + b*sin(start_r) * cos(rotation) );
+                pcnt = 1
+                while pcnt < angle_steps+1:
+                    phi = start_r + pcnt*step_phi
+                    x1 = xcp + ( a*cos(phi) * cos(rotation) - b*sin(phi) * sin(rotation) );
+                    y1 = ycp + ( a*cos(phi) * sin(rotation) + b*sin(phi) * cos(rotation) );
+                    self.coords.append([x0,y0,x1,y1])
+                    x0=x1
+                    y0=y1
+                    pcnt += 1
+
+            ########### LEADER ###########
+            elif e.type == "LEADER":
+                flag=0       
+                for x,y in zip(e.data["10"], e.data["20"]):
+                    x1 = x
+                    y1 = y
+                    if flag==0:
+                        x0=x1
+                        y0=y1
+                        flag=1
+                    else:
+                        self.coords.append([x0,y0,x1,y1])
+                        x0=x1
+                        y0=y1
+
+            ########### POLYLINE ###########
+            elif e.type == "POLYLINE":
+                self.POLY_CLOSED =  0
+                self.POLY_FLAG   = -1
+                try:
+                    TYPE=e.data["70"]
+                    if (TYPE==0 or TYPE==8):
+                        pass
+                    elif (TYPE==1):
+                        self.POLY_CLOSED=1
+                    else:
+                        fmessage("DXF Import Ignored: - %s - Entity" %(e.type))
+                        fmessage(e.data["70"])
+                        self.POLY_FLAG = 0
+                except:
+                    pass
+
+            ########### SEQEND ###########
+            elif e.type == "SEQEND":
+                if (self.POLY_FLAG != 0):
+                    self.POLY_FLAG=0
+                    if (self.POLY_CLOSED==1):
+                        self.POLY_CLOSED==0
+                        x0 = self.PX
+                        y0 = self.PY
+                        x1 = self.PX0
+                        y1 = self.PY0
+                            
+                        if self.bulge != 0:
+                            bcoords = self.bulge_coords(x0,y0,x1,y1,self.bulge,tol_deg)
+                            for line in bcoords:
+                                self.coords.append(line)
+                        else:
+                            self.coords.append([x0,y0,x1,y1])
+
+                else:
+                    fmessage("DXF Import Ignored: - %s - Entity" %(e.type))
+
+            ########### VERTEX ###########
+            elif e.type == "VERTEX":
+ 
+                if (self.POLY_FLAG==-1):
+                    self.PX  = e.data["10"]
+                    self.PY  = e.data["20"]
+                    self.PX0 = self.PX
+                    self.PY0 = self.PY
+                    try:
+                        self.bulge = e.data["42"]
+                    except:
+                        self.bulge = 0
+
+                    self.POLY_FLAG = 1
+                elif (self.POLY_FLAG == 1):
+                    x0 = self.PX
+                    y0 = self.PY
+                    x1 = e.data["10"]
+                    y1 = e.data["20"]
+                    self.PX=x1
+                    self.PY=y1
+                    
+                    if self.bulge != 0:
+                        bcoords = self.bulge_coords(x0,y0,x1,y1,self.bulge,tol_deg)
+                        for line in bcoords:
+                            self.coords.append(line)
+                    else:
+                        self.coords.append([x0,y0,x1,y1])
+
+                    try:
+                        self.bulge = e.data["42"]
+                    except:
+                        self.bulge = 0
+                else:
+                    fmessage("DXF Import Ignored: - %s - Entity" %(e.type))
+                    pass
+            ########### END VERTEX ###########                    
+            else:
+                fmessage("DXF Import Ignored: %s Entity" %(e.type))
+                pass
+        
+    def DXF_COORDS_GET(self):
+        ymin=99999
+        xmin=99999
+        for line in self.coords:
+            XY=line
+            if XY[0] < xmin:
+                    xmin = XY[0]
+            if XY[1] < ymin:
+                    ymin = XY[1]
+            if XY[2] < xmin:
+                    xmin = XY[2]
+            if XY[3] < ymin:
+                    ymin = XY[3]
+        coords_out=[]
+        for line in self.coords:
+            XY=line
+            coords_out.append([XY[0]-xmin, XY[1]-ymin, XY[2]-xmin, XY[3]-ymin])
+        return coords_out
+
+
+		
+def main():
+	root = Tk()
+
+	app = Application(root)
+	app.master.title("IPMark" + version)
+	app.master.iconname("IPM_Mark")
+	app.master.minsize(1024,768)
+	root.attributes('-fullscreen','1')
+	root.configure(bg='navy')
+
+	root.mainloop()
+
+if __name__ == '__main__':
+    main()  
